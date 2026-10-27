@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/HBAI-Ltd/Toonflow-app",
+  "commit": "30139c931e80476caa718b31684b86383c6e83ce",
+  "license": "MIT",
+  "source": "通过 scripts/prepare-upstream.mjs 检出独立服务源码并应用 patches",
+  "adaptation": [
+    "patches/toonflow-studio.patch",
+    "patches/toonflowStudio.css",
+    "patches/studioControl.js"
+  ],
+  "note": "后端源码、数据库和模型媒体供应商独立部署；本仓库包含工作室入口、会话适配和完整补丁，不包含运行数据。"
+}

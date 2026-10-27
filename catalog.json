@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "dsh-studio-media",
+  "version": "0.1.0",
+  "kind": "studio",
+  "packages": [
+    {
+      "id": "media",
+      "path": "studios/media"
+    }
+  ]
+}

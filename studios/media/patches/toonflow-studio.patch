@@ -1,0 +1,1513 @@
+diff --git a/apps/server/src/index.ts b/apps/server/src/index.ts
+index 015882d..7887dde 100644
+--- a/apps/server/src/index.ts
++++ b/apps/server/src/index.ts
+@@ -21,9 +21,15 @@ const app = await createApp({
+   providersRoot: resolve(appDirectory, fromSource ? "packages/providers/src" : "build/providers"),
+   skillsRoot: resolve(appDirectory, fromSource ? "packages/skills" : "build/skills"),
+ });
++if (process.env.TOONFLOW_STUDIO_DSH === '1') {
++  const [{ default: conf }, { randomBytes }] = await Promise.all([import('./utils/conf'), import('node:crypto')]);
++  const settings = conf.get('settings', {});
++  const previous = settings.mcp as { token?: string } | undefined;
++  conf.set('settings', { ...settings, mcp: { ...previous, enabled: true, token: previous?.token && previous.token.length >= 32 ? previous.token : randomBytes(32).toString('hex') } });
++}
+ const { initializeMcpRuntime } = await import("./utils/mcp/runtime");
+ const { startMobileLinkRuntime } = await import("./utils/mobileLink");
+-app.listen(realPort, async (error?: Error) => {
++app.listen(realPort, process.env.TOONFLOW_SERVER_HOST ?? "127.0.0.1", async (error?: Error) => {
+   if (error) throw error;
+   await initializeMcpRuntime(app, `http://127.0.0.1:${realPort}`, resolve(appDirectory, fromSource ? "packages/mcp/src/stdio.ts" : "build/mcp/stdio.js"));
+   await startMobileLinkRuntime(app).catch(error => console.error("设备互联启动失败：", error));
+diff --git a/apps/server/src/routes/agent.ts b/apps/server/src/routes/agent.ts
+index 4e9ee3c..7dfc5a5 100644
+--- a/apps/server/src/routes/agent.ts
++++ b/apps/server/src/routes/agent.ts
+@@ -17,7 +17,8 @@ const inputSchema = z.object({
+   sessionFile: z.string().regex(/^[\w-]+\.jsonl$/).optional(),
+   resendFrom: z.string().min(1).max(128).optional(),
+   canvas: z.strictObject({
+-    id: z.string().min(1).max(256),
++    // 未选画布时仍需提供新建、切换画布等工作区操作，空 ID 表示尚未选择。
++    id: z.string().max(256),
+     tools: z.array(z.strictObject({
+       nodeId: z.string().min(1).max(256),
+       name: z.string().max(101).regex(/^node:[a-z][a-zA-Z0-9]*$/),
+diff --git a/apps/web/src/components/agent/conversation.vue b/apps/web/src/components/agent/conversation.vue
+index 7333b8e..aa09dc5 100644
+--- a/apps/web/src/components/agent/conversation.vue
++++ b/apps/web/src/components/agent/conversation.vue
+@@ -16,6 +16,7 @@
+       @copy="copyMessage"
+       @edit="input?.editMessage($event)"
+       @delete="deleteMessage"
++      @discuss="discussMessage"
+       @cancelEdit="input?.cancelEdit()" />
+     <div v-if="compacting" class="compactionStatus" role="status">
+       <el-icon class="is-loading" aria-hidden="true"><icon-loader-2 :size="14" /></el-icon>
+@@ -37,6 +38,7 @@
+       :contextUsage="contextUsage"
+       :stats="stats"
+       :contextWindow="contextWindow"
++      @discuss="discussMessage()"
+       @submit="submitMessage"
+       @stop="stopMessage" />
+   </div>
+@@ -50,6 +52,7 @@ import { IconLoader2 } from "@tabler/icons-vue";
+ import { ElMessage } from "element-plus";
+ import { getReadableFileExtension, getReadableFileMimeType } from "@toonflow/server/documentFormats";
+ import useWorkspaceFiles from "@/lib/workspaceFiles";
++import { shareStudioMessage } from "@/lib/studioDiscussion";
+ import { writeClipboardText } from "@/lib/clipboard";
+ import anonymousData from "@/lib/anonymousData";
+ import { modelChoices } from "@/stores/settings";
+@@ -205,6 +208,24 @@ async function sendCanvasResult(event: Extract<AgentEvent, { type: "canvasCall"
+   }
+ }
+ 
++let discussingInStudio = false;
++async function discussMessage(source?: AgentMessage) {
++  if (locked.value || discussingInStudio) return;
++  const draft = source ?? input.value?.getDraft();
++  if (!draft) return;
++  const prompt = "prompt" in draft ? draft.prompt : draft.content;
++  if (!prompt && !draft.attachments?.length) return ElMessage.warning("请先输入协作内容");
++  discussingInStudio = true;
++  try {
++    await shareStudioMessage({ content: prompt, attachments: draft.attachments, mentions: draft.mentions }, directory, createCanvasContext?.()?.id);
++    ElMessage.success("已带入 App 聊天草稿，请确认后发送；工作台原文已保留");
++  } catch (error) {
++    ElMessage.error(error instanceof Error ? error.message : "App 协作暂不可用");
++  } finally {
++    discussingInStudio = false;
++  }
++}
++
+ async function sendMessage(source?: AgentMessage) {
+   const instance = input.value;
+   const draft = instance?.getDraft();
+diff --git a/apps/web/src/components/agent/conversation/messageInput.vue b/apps/web/src/components/agent/conversation/messageInput.vue
+index 4c8f3d0..b19523c 100644
+--- a/apps/web/src/components/agent/conversation/messageInput.vue
++++ b/apps/web/src/components/agent/conversation/messageInput.vue
+@@ -38,13 +38,15 @@
+     <teleport v-for="target in draftMentionTargets" :key="target.key" :to="target.element"><mentionThumbnail v-bind="mentionThumbnailProps(target.mention)" :directory="directory"><icon-photo :size="14" /></mentionThumbnail></teleport>
+     <mentionContent ref="draftMentionPreview" :mentions="draftMentions" :directory="directory" removable @remove="removeDraftMention" />
+     <div class="senderActions">
+-      <modelPopover v-model="selectedModel" v-model:reasoningEffort="reasoningEffort" :active="active" :disabled="disabled || voiceActive" />
++      <slot v-if="sharedModelLabel !== undefined" name="modelSelector"><span class="tf:min-w-0 tf:flex-1 tf:truncate tf:text-xs tf:text-(--el-text-color-secondary)" :title="sharedModelLabel">{{ sharedModelLabel }}</span></slot>
++      <modelPopover v-else v-model="selectedModel" v-model:reasoningEffort="reasoningEffort" :active="active" :disabled="disabled || voiceActive" />
+       <input ref="attachmentInput" type="file" :accept="attachmentAccept" multiple hidden :disabled="locked" @change="selectAttachments" />
+       <el-button text circle :disabled="locked" aria-label="添加附件" title="添加附件" @click="attachmentInput?.click()"><icon-paperclip :size="16" /></el-button>
+       <mentionMenu ref="mentionMenuRef" :directory="directory" :active="active" :disabled="locked || !directory" :query="mentionQuery" :editor="senderElement" :currentCanvasId="createCanvasContext?.()?.id" @open="captureMentionPosition" @select="insertMentions" @dismiss="mentionQuery = undefined" />
+-      <skillMenu ref="skillMenuRef" :directory="directory" :active="active" :disabled="locked || !directory" :query="skillQuery" :editor="senderElement" @select="selectSkill" @dismiss="skillQuery = undefined" />
++      <skillMenu v-if="sharedModelLabel === undefined" ref="skillMenuRef" :directory="directory" :active="active" :disabled="locked || !directory" :query="skillQuery" :editor="senderElement" @select="selectSkill" @dismiss="skillQuery = undefined" />
+       <el-button class="voiceButton" :class="{ voiceActive }" text circle :disabled="!voiceSupported || (!voiceActive && locked)" :aria-label="voiceButtonLabel" :aria-pressed="voiceActive" :title="voiceButtonLabel" @click="voiceActive ? cancelVoiceInput() : startVoiceInput()"><icon-microphone :size="18" /></el-button>
+-      <contextUsagePopover v-model:visible="contextMenuVisible" :usage="contextUsage" :stats="stats" :contextWindow="contextWindow" :disabled="voiceActive" />
++      <el-button v-if="isStudioEmbedded && sharedModelLabel === undefined" text :disabled="locked" aria-label="交给 App 协作" title="将当前输入带入 App 聊天草稿" @click="emit('discuss')">App 协作</el-button>
++      <contextUsagePopover v-if="sharedModelLabel === undefined" v-model:visible="contextMenuVisible" :usage="contextUsage" :stats="stats" :contextWindow="contextWindow" :disabled="voiceActive" />
+       <el-button class="sendButton" type="primary" circle :disabled="!busy && locked" :aria-label="busy ? '停止生成' : editingId ? '重发消息' : '发送消息'" :title="busy ? '停止生成' : editingId ? '重发消息' : '发送消息'" @click="busy ? emit('stop') : emit('submit')">
+         <icon-player-stop-filled v-if="busy" :size="14" />
+         <icon-arrow-up v-else :size="16" />
+@@ -61,6 +63,7 @@ import { ElMessage } from "element-plus";
+ import { getReadableFileMimeType, readableFileAccept } from "@toonflow/server/documentFormats";
+ import type { AgentContext, AgentMention, AgentStats } from "@toonflow/server/agent/types";
+ import type { CanvasContext } from "@toonflow/tool-canvas/runtime";
++import { isStudioEmbedded } from "@/lib/platform";
+ import modelPopover from "@/components/modelPopover.vue";
+ import skillMenu from "../skillMenu.vue";
+ import mentionMenu from "../mentionMenu.vue";
+@@ -75,8 +78,9 @@ import useVoiceInput from "./useVoiceInput";
+ import xSender, { type AnyTagProps } from "x-sender";
+ import "x-sender/lib/XSender.css";
+ 
+-const props = defineProps<{ active: boolean; disabled: boolean; busy: boolean; remoteRunning: boolean; deletingId?: string; directory?: string; contextUsage?: AgentContext; stats?: AgentStats; contextWindow: number }>();
+-const emit = defineEmits<{ submit: []; stop: [] }>();
++interface Props { active: boolean; disabled: boolean; busy: boolean; remoteRunning: boolean; deletingId?: string; directory?: string; contextUsage?: AgentContext; stats?: AgentStats; contextWindow: number; sharedModelLabel?: string }
++const props = defineProps<Props>();
++const emit = defineEmits<{ submit: []; stop: []; discuss: [] }>();
+ const selectedModel = defineModel<string>("selectedModel", { required: true });
+ const reasoningEffort = defineModel<string>("reasoningEffort", { required: true });
+ const editingId = defineModel<string>("editingId");
+diff --git a/apps/web/src/components/agent/conversation/messageList.vue b/apps/web/src/components/agent/conversation/messageList.vue
+index 4b275b6..991af7b 100644
+--- a/apps/web/src/components/agent/conversation/messageList.vue
++++ b/apps/web/src/components/agent/conversation/messageList.vue
+@@ -50,7 +50,7 @@
+                     </template>
+                     <messageMarkdown v-if="!(part.collapsed ?? true)" :content="part.content" :streaming="!!item.streaming" :directory="directory" />
+                   </chat-reasoning>
+-                  <toolMessage v-else-if="part.type === 'tool' && !isBrowserTool(part.tool)" v-model:collapsed="part.collapsed" :tool="part.tool" :directory="directory" @copy="emit('copy', $event)" />
++                  <toolMessage v-else-if="part.type === 'tool' && (shared || !isBrowserTool(part.tool))" v-model:collapsed="part.collapsed" :tool="part.tool" :directory="directory" :shared="shared" @copy="emit('copy', $event)" />
+                   <messageMarkdown v-else-if="part.type === 'text' && part.content" :content="part.content" :streaming="!!item.streaming" :directory="directory" />
+                 </template>
+                 <attachmentList v-if="item.attachments?.length" :attachments="item.attachments" :directory="directory" />
+@@ -66,10 +66,11 @@
+             </template>
+             <template v-else>
+               <el-button v-if="item.content" class="messageAction" text circle aria-label="复制消息" title="复制消息" @click="emit('copy', mentionPlainText(item.content, item.mentions))"><icon-copy :size="14" /></el-button>
+-              <template v-if="item.role === 'user'">
++              <template v-if="item.role === 'user' && !shared">
++                <el-button v-if="isStudioEmbedded" text size="small" :disabled="locked" aria-label="交给 App 协作" @click="emit('discuss', item)">App 协作</el-button>
+                 <el-button class="messageAction" text circle :disabled="locked || remoteRunning" aria-label="编辑消息" title="编辑消息" @click="emit('edit', item)"><icon-pencil :size="14" /></el-button>
+               </template>
+-              <el-button v-if="!item.report" class="messageAction" text circle :loading="deletingId === item.id" :disabled="locked || remoteRunning" aria-label="删除消息" title="删除消息" @click="emit('delete', item)"><icon-trash v-if="deletingId !== item.id" :size="14" /></el-button>
++              <el-button v-if="!shared && !item.report" class="messageAction" text circle :loading="deletingId === item.id" :disabled="locked || remoteRunning" aria-label="删除消息" title="删除消息" @click="emit('delete', item)"><icon-trash v-if="deletingId !== item.id" :size="14" /></el-button>
+             </template>
+           </div>
+           <browserPanel v-if="browserMessages.tools.has(item.id)" class="browserPreview" :tools="browserMessages.tools.get(item.id)!" :directory="directory" :active="active" :live="item.id === browserMessages.liveMessageId" />
+@@ -81,6 +82,7 @@
+ </template>
+ 
+ <script setup lang="ts">
++import { isStudioEmbedded } from "@/lib/platform";
+ import { computed, nextTick, ref, watch, type ComponentPublicInstance } from "vue";
+ import { defaultRangeExtractor, measureElement, observeElementRect, useVirtualizer } from "@tanstack/vue-virtual";
+ import { IconArrowDown, IconArrowUpRight, IconAtom, IconChevronDown, IconChevronRight, IconCopy, IconMovie, IconPencil, IconPhoto, IconTrash, IconUsersGroup, IconVector, IconX } from "@tabler/icons-vue";
+@@ -99,9 +101,11 @@ import type { AgentMessage } from "../types";
+ import "tdesign-vue-next/es/style/index.css";
+ import "@tdesign-vue-next/chat/es/style/index.css";
+ 
+-const props = defineProps<{ messages: AgentMessage[]; directory?: string; active: boolean; disabled: boolean; locked: boolean; busy: boolean; remoteRunning: boolean; compacting: boolean; editingId?: string; deletingId?: string; voiceActive: boolean }>();
+-const emit = defineEmits<{ fillPrompt: [prompt: string]; copy: [content: string]; edit: [message: AgentMessage]; delete: [message: AgentMessage]; cancelEdit: [] }>();
++interface Props { messages: AgentMessage[]; directory?: string; active: boolean; disabled: boolean; locked: boolean; busy: boolean; remoteRunning: boolean; compacting: boolean; editingId?: string; deletingId?: string; voiceActive: boolean; shared?: boolean }
++const props = defineProps<Props>();
++const emit = defineEmits<{ fillPrompt: [prompt: string]; copy: [content: string]; edit: [message: AgentMessage]; delete: [message: AgentMessage]; cancelEdit: []; discuss: [message: AgentMessage] }>();
+ const browserMessages = computed(() => {
++  if (props.shared) return { tools: new Map<string, AgentToolCall[]>(), liveMessageId: undefined };
+   const groups = new Map<string, { id: string; tools: AgentToolCall[] }>();
+   let turnId: string | undefined;
+   let liveMessageId: string | undefined;
+@@ -126,7 +130,7 @@ const browserMessages = computed(() => {
+   return { tools: new Map([...groups.values()].map(group => [group.id, group.tools])), liveMessageId };
+ });
+ // 同轮浏览器调用共用该轮首条浏览器消息底部的画面，原始工具记录仍完整保留。
+-const displayedMessages = computed(() => props.messages.filter(message => browserMessages.value.tools.has(message.id) || message.role === "user" || message.error || message.report || message.attachments?.length ||
++const displayedMessages = computed(() => props.messages.filter(message => props.shared || browserMessages.value.tools.has(message.id) || message.role === "user" || message.error || message.report || message.attachments?.length ||
+   !message.parts?.length || message.parts.some(part => part.type !== "tool" || !isBrowserTool(part.tool))));
+ const messageList = ref<HTMLDivElement>();
+ const atLatestMessage = ref(true);
+@@ -185,14 +189,21 @@ function measureMessage(element: Element | ComponentPublicInstance | null) {
+   });
+ }
+ 
+-watch([() => props.active, messageList], async ([active, element]) => {
+-  if (!active || !element) return;
++watch([() => props.active, messageList, () => props.shared && props.disabled], async ([active, element, waiting]) => {
++  if (!active || !element || waiting) return;
+   await nextTick();
+   if (!props.active) return;
+   if (!messageListInitialized || atLatestMessage.value) messageVirtualizer.value.scrollToEnd();
+   else messageVirtualizer.value.scrollToOffset(messageScrollOffset);
+   messageListInitialized = true;
+ }, { immediate: true, flush: "post" });
++
++async function scrollToLatest() {
++  atLatestMessage.value = true;
++  await nextTick();
++  messageVirtualizer.value.scrollToEnd();
++}
++defineExpose({ scrollToLatest });
+ const welcomeSuggestions = [
+   { label: "搭建创作画布", description: "把创意串成清晰的节点流程", icon: IconVector, prompt: "帮我搭建一个创作画布，先和我确认需要的节点与流程。" },
+   { label: "梳理故事分镜", description: "拆解故事，安排画面与镜头", icon: IconMovie, prompt: "帮我把故事整理成分镜，先和我确认故事内容、时长和画面风格。" },
+diff --git a/apps/web/src/components/agent/replyStream.ts b/apps/web/src/components/agent/replyStream.ts
+index ed7d1da..1274709 100644
+--- a/apps/web/src/components/agent/replyStream.ts
++++ b/apps/web/src/components/agent/replyStream.ts
+@@ -6,7 +6,8 @@ import type { AgentMessage, AgentMessagePart } from "./types";
+ export async function* readAgentEvents<T extends { type: string; message?: string } = AgentEvent>(response: Response, signal: AbortSignal) {
+   if (!response.ok) {
+     const error = await response.json().catch(() => null);
+-    throw new Error(error?.message || `请求失败（${response.status}）`);
++    const details = Array.isArray(error?.data) ? error.data.filter((item: unknown): item is string => typeof item === "string") : [];
++    throw new Error([error?.message || `请求失败（${response.status}）`, ...details].join("；"));
+   }
+   if (!response.body) throw new Error("未收到响应流");
+   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+diff --git a/apps/web/src/components/agent/toolMessage.vue b/apps/web/src/components/agent/toolMessage.vue
+index 48cfc41..f03630b 100644
+--- a/apps/web/src/components/agent/toolMessage.vue
++++ b/apps/web/src/components/agent/toolMessage.vue
+@@ -33,7 +33,8 @@ import chatReasoning from "@tdesign-vue-next/chat/es/chat-reasoning";
+ import type { AgentToolCall } from "@toonflow/server/agent/types";
+ import messageMarkdown from "@/components/messageMarkdown.vue";
+ 
+-const { tool, directory, toolSessionId } = defineProps<{ tool: AgentToolCall; directory?: string; toolSessionId?: string }>();
++interface Props { tool: AgentToolCall; directory?: string; toolSessionId?: string; shared?: boolean }
++const { tool, directory, toolSessionId, shared } = defineProps<Props>();
+ const emit = defineEmits<{ copy: [content: string] }>();
+ const renderer = shallowRef<Component>();
+ const rendererError = ref("");
+@@ -42,7 +43,7 @@ watch(() => [tool.name, tool.question?.callId] as const, async ([name], _previou
+   onCleanup(() => { active = false; });
+   renderer.value = undefined;
+   rendererError.value = "";
+-  if (name === "subAgent") return;
++  if (name === "subAgent" || shared) return;
+   try {
+     const component = await loadToolComponent(name);
+     if (active) {
+diff --git a/apps/web/src/components/settings/index.vue b/apps/web/src/components/settings/index.vue
+index c59a27b..ea5fbfe 100644
+--- a/apps/web/src/components/settings/index.vue
++++ b/apps/web/src/components/settings/index.vue
+@@ -2,7 +2,7 @@
+   <el-dialog v-model="visible" title="设置" width="min(1080px, calc(100vw - 32px))" alignCenter appendToBody>
+     <div class="settings">
+       <aside class="sidebar" aria-label="设置分类">
+-        <template v-for="item in settingsPanels" :key="item.id">
++        <template v-for="item in visiblePanels" :key="item.id">
+           <h3 v-if="item.groupLabel" class="settingsGroupLabel">{{ item.groupLabel }}</h3>
+           <button
+             class="settingsItem"
+@@ -16,6 +16,7 @@
+             <span>{{ item.label }}</span>
+           </button>
+         </template>
++        <button v-if="isStudioEmbedded" class="settingsItem" type="button" :aria-expanded="showAdvanced" @click="toggleAdvanced">{{ showAdvanced ? '收起高级设置' : '高级设置' }}</button>
+       </aside>
+       <section class="content" :aria-label="activePanel.label" tabindex="0">
+         <h2 class="panelTitle">{{ activePanel.label }}</h2>
+@@ -36,9 +37,9 @@
+ </template>
+ 
+ <script setup lang="ts">
+-import { defineAsyncComponent, shallowRef } from "vue";
++import { computed, defineAsyncComponent, ref, shallowRef } from "vue";
+ import { hasDesktopUpdate } from "@/stores/desktopUpdate";
+-import { isMobile } from "@/lib/platform";
++import { isMobile, isStudioEmbedded } from "@/lib/platform";
+ import {
+   IconPalette,
+   IconSettings,
+@@ -86,7 +87,14 @@ const settingsPanels = [
+   { id: "developer", label: "开发者选项", icon: IconCode, component: defineAsyncComponent(() => import("./panels/developer/index.vue")) },
+   { id: "about", label: "关于", icon: IconInfoCircle, component: defineAsyncComponent(() => import("./panels/about.vue")) },
+ ];
+-const activePanel = shallowRef(settingsPanels[0]!);
++const commonPanelIds = ["languageModel", "mediaModel", "general", "ui"];
++const showAdvanced = ref(!isStudioEmbedded);
++const visiblePanels = computed(() => settingsPanels.filter(item => showAdvanced.value || commonPanelIds.includes(item.id)));
++const activePanel = shallowRef(isStudioEmbedded ? settingsPanels.find(item => item.id === "languageModel")! : settingsPanels[0]!);
++function toggleAdvanced() {
++  showAdvanced.value = !showAdvanced.value;
++  if (!showAdvanced.value && !commonPanelIds.includes(activePanel.value.id)) activePanel.value = visiblePanels.value[0]!;
++}
+ const visible = defineModel<boolean>({ default: false });
+ </script>
+ 
+diff --git a/apps/web/src/lib/mcpControl.ts b/apps/web/src/lib/mcpControl.ts
+index 7c28e95..12b0ddd 100644
+--- a/apps/web/src/lib/mcpControl.ts
++++ b/apps/web/src/lib/mcpControl.ts
+@@ -1,3 +1,4 @@
++import { useStudioSession } from "./studioSession";
+ import { locale } from "@toonflow/i18n/vue";
+ import { onScopeDispose, shallowRef, watch, type WatchSource } from "vue";
+ import { useRouter } from "vue-router";
+@@ -51,6 +52,7 @@ export function useMcpControl() {
+     ...workspaceControl.value?.getState(),
+     projectList: workspaceStore.projectList,
+   });
++  useStudioSession(() => ({ directory: getState().directory, canvasId: getState().canvasId }));
+   watch(() => workspaceStore.project?.directory, () => {
+     for (const controller of calls.values()) controller.abort(new Error("工作区已切换，本次调用已停止"));
+   }, { flush: "sync" });
+diff --git a/apps/web/src/lib/platform.ts b/apps/web/src/lib/platform.ts
+index 33df935..a36a75e 100644
+--- a/apps/web/src/lib/platform.ts
++++ b/apps/web/src/lib/platform.ts
+@@ -5,3 +5,5 @@ export const isMobile = parameters.get("mobile") === "1";
+ export const isDesktop = parameters.get("desktop") === "1";
+ export const isRemoteConnection = (isMobile || isDesktop) && parameters.get("remote") === "1";
+ export const isRemoteMobile = isMobile && isRemoteConnection;
++
++export const isStudioEmbedded = window.self !== window.top && parameters.get("embed") === "studio";
+diff --git a/apps/web/src/pages/home/index.vue b/apps/web/src/pages/home/index.vue
+index 9642ac9..6a38eea 100644
+--- a/apps/web/src/pages/home/index.vue
++++ b/apps/web/src/pages/home/index.vue
+@@ -24,7 +24,7 @@
+         </button>
+       </nav>
+       <div class="sidebarFooter">
+-        <button class="sidebarItem deviceButton" :class="{ connected: deviceHubEnabled || mobileConnection.online === true }" type="button" :aria-label="mobileConnectionLabel" :title="mobileConnectionLabel" @click="mobileConnectVisible = true">
++        <button v-if="!isStudioEmbedded" class="sidebarItem deviceButton" :class="{ connected: deviceHubEnabled || mobileConnection.online === true }" type="button" :aria-label="mobileConnectionLabel" :title="mobileConnectionLabel" @click="mobileConnectVisible = true">
+           <span class="sidebarIcon">
+             <component :is="deviceHubEnabled || mobileConnection.mode === 'remote' ? IconDeviceDesktop : IconQrcode" :size="18" aria-hidden="true" />
+             <span v-if="deviceHubEnabled || mobileConnection.online === true" class="connectionDot" />
+@@ -38,7 +38,7 @@
+           </span>
+           <span class="sidebarText">设置</span>
+         </button>
+-        <a class="sidebarItem githubLink" href="https://github.com/HBAI-Ltd/Toonflow-app" target="_blank" rel="noopener noreferrer" aria-label="GitHub" title="GitHub">
++        <a v-if="!isStudioEmbedded" class="sidebarItem githubLink" href="https://github.com/HBAI-Ltd/Toonflow-app" target="_blank" rel="noopener noreferrer" aria-label="GitHub" title="GitHub">
+           <icon-brand-github :size="18" aria-hidden="true" />
+           <span class="sidebarText">GitHub</span>
+         </a>
+@@ -69,7 +69,9 @@
+                       <workspacePicker ref="promptWorkspacePicker" v-model="workspaceDirectory" :disabled="creating || opening" />
+                     </div>
+                     <div class="sendActions">
+-                      <modelPopover v-model="selectedModel" v-model:reasoningEffort="reasoningEffort" class="modelSelect" :disabled="creating || opening" />
++                      <el-button v-if="isStudioEmbedded" text :loading="sharingInStudio" :disabled="creating || opening" aria-label="交给 App 协作" @click="shareWithStudio">App 协作</el-button>
++                      <span v-if="isStudioEmbedded" class="text-sm text-slate-500">使用 dsh 本体模型</span>
++                      <modelPopover v-else v-model="selectedModel" v-model:reasoningEffort="reasoningEffort" class="modelSelect" :disabled="creating || opening" />
+                       <el-button class="sendButton" type="primary" :circle="!!workspaceDirectory" :icon="workspaceDirectory ? IconArrowUp : IconFolder" :loading="creating" :disabled="creating || opening" :aria-label="workspaceDirectory ? '发送' : '选择工作目录'" @click="workspaceDirectory ? createProject() : promptWorkspacePicker?.chooseDirectory()">
+                         <template v-if="!workspaceDirectory" #default>选择工作目录</template>
+                       </el-button>
+@@ -110,7 +112,7 @@
+               </el-card>
+             </div>
+           </section>
+-          <div data-home-section="explore"><explore :scrollElement="pageScroll?.wrapRef" /></div>
++          <div v-if="!isStudioEmbedded" data-home-section="explore"><explore :scrollElement="pageScroll?.wrapRef" /></div>
+         </el-main>
+       </div>
+     </el-scrollbar>
+@@ -137,10 +139,12 @@ import {
+ } from "@tabler/icons-vue";
+ import modelPopover from "@/components/modelPopover.vue";
+ import attachmentList from "@/components/agent/attachmentList.vue";
++import { shareStudioMessage } from "@/lib/studioDiscussion";
+ import { createPastedTextFile, readTextAttachment } from "@/components/agent/textAttachments";
+ import type { AgentAttachment } from "@/components/agent/types";
+ import logoUrl from "@toonflow/assets/logo.svg";
+ import { useWorkspaceStore, type Project } from "@/stores/workspace";
++import { isStudioEmbedded } from "@/lib/platform";
+ import { hasDesktopUpdate } from "@/stores/desktopUpdate";
+ import { deviceHubEnabled, mobileConnection, mobileConnectionLabel } from "@/lib/mobile";
+ import useWorkspaceFiles from "@/lib/workspaceFiles";
+@@ -162,7 +166,7 @@ const activeSection = ref("home");
+ const homeSections = [
+   { id: "home", label: "首页", icon: IconHome },
+   { id: "projects", label: "项目", icon: IconFolder },
+-  { id: "explore", label: "探索", icon: IconCompass },
++  ...(!isStudioEmbedded ? [{ id: "explore", label: "探索", icon: IconCompass }] : []),
+ ];
+ const mobileConnect = defineAsyncComponent(() => import("@/components/mobileConnect.vue"));
+ const router = useRouter();
+@@ -370,6 +374,21 @@ function addAttachments(files: File[]) {
+   }
+ }
+ 
++const sharingInStudio = ref(false);
++async function shareWithStudio() {
++  if (sharingInStudio.value || creating.value || opening.value) return;
++  if (!prompt.value.trim() && !promptAttachments.value.length) return ElMessage.warning("请先输入协作内容");
++  sharingInStudio.value = true;
++  try {
++    await shareStudioMessage({ content: prompt.value, attachments: promptAttachments.value }, workspaceDirectory.value);
++    ElMessage.success("已带入 App 聊天草稿，请确认后发送；工作台原文已保留");
++  } catch (error) {
++    ElMessage.error(error instanceof Error ? error.message : "App 协作暂不可用");
++  } finally {
++    sharingInStudio.value = false;
++  }
++}
++
+ async function restoreAttachment(index: number) {
+   const attachment = promptAttachments.value[index];
+   if (attachment?.mimeType !== "text/plain" || creating.value || opening.value) return;
+diff --git a/apps/web/src/pages/workspace/components/floatingAgent.vue b/apps/web/src/pages/workspace/components/floatingAgent.vue
+index ef0fa9f..8e8a5dd 100644
+--- a/apps/web/src/pages/workspace/components/floatingAgent.vue
++++ b/apps/web/src/pages/workspace/components/floatingAgent.vue
+@@ -27,7 +27,7 @@
+         tabindex="0"
+         @pointerdown.stop="startInteraction($event, handle.edge)"
+         @keydown="resizeWithKeyboard($event, handle.edge)" />
+-      <agent v-model="visible">
++      <component :is="isStudioEmbedded ? studioConversation : agent" :key="projectDirectory" v-model="visible">
+         <template #menuActions>
+           <el-button
+             text
+@@ -39,7 +39,7 @@
+             <icon-layout-sidebar-right v-else :size="17" aria-hidden="true" />
+           </el-button>
+         </template>
+-      </agent>
++      </component>
+     </aside>
+   </teleport>
+ </template>
+@@ -48,10 +48,15 @@
+ import { computed, onBeforeUnmount, reactive, ref, shallowRef, watch } from "vue";
+ import { IconLayoutSidebarRight, IconAppWindowBottomRight } from "@tabler/icons-vue";
+ import agent from "@/components/agent/index.vue";
++import studioConversation from "@/components/agent/studioConversation.vue";
++import { isStudioEmbedded } from "@/lib/platform";
++import { useWorkspaceStore } from "@/stores/workspace";
+ 
+ const visible = defineModel<boolean>({ default: false });
+ const emit = defineEmits<{ resize: [width: number] }>();
+-const docked = ref(false);
++const docked = ref(isStudioEmbedded);
++const workspace = useWorkspaceStore();
++const projectDirectory = computed(() => workspace.project?.directory);
+ const viewport = reactive({ width: window.innerWidth, height: window.innerHeight });
+ const gap = computed(() => Math.min(15, viewport.width / 2, viewport.height / 2));
+ const maxWidth = computed(() => Math.max(0, docked.value ? viewport.width * 0.45 : viewport.width - gap.value * 2));
+diff --git a/apps/web/src/pages/workspace/index.vue b/apps/web/src/pages/workspace/index.vue
+index 1d5ebb4..8071d8f 100644
+--- a/apps/web/src/pages/workspace/index.vue
++++ b/apps/web/src/pages/workspace/index.vue
+@@ -110,6 +110,12 @@
+         </el-tooltip>
+       </div>
+     </div>
++    <div v-if="isStudioEmbedded && !agentVisible" class="tf:absolute tf:right-6 tf:top-4 tf:z-20 tf:flex tf:items-center tf:gap-2 tf:rounded-lg tf:bg-(--el-bg-color) tf:p-2 tf:text-sm tf:shadow">
++      <span role="status" class="tf:max-w-48 tf:truncate" :title="studioSessionStatus">{{ studioSessionStatus }}</span>
++      <el-button size="small" @click="openStudioChat">dsh 对话</el-button>
++      <el-button v-if="workspaceStore.pendingAgentMessage" size="small" @click="retryStudioPrompt">重试发送</el-button>
++      <a :href="legacyStudioUrl" target="_blank" rel="noopener noreferrer">旧对话 ↗</a>
++    </div>
+     <floatingAgent v-model="agentVisible" :inert="workspaceStore.projectLoadingVisible" @resize="agentWidth = $event" />
+     <settings v-model="settingsVisible" />
+     <el-dialog v-model="contactVisible" :title="contactInfo.title" width="min(360px, calc(100vw - 32px))" alignCenter appendToBody>
+@@ -139,6 +145,8 @@ import { QRCode } from "tdesign-vue-next";
+ import settings from "@/components/settings/index.vue";
+ import { useWorkspaceStore } from "@/stores/workspace";
+ import { registerWorkspaceControl, waitForControlValue } from "@/lib/mcpControl";
++import { isStudioEmbedded } from "@/lib/platform";
++import { requestStudioSession, sendPendingStudioPrompt, studioSessionStatus } from "@/lib/studioSession";
+ import anonymousData from "@/lib/anonymousData";
+ import { useProviderBalances } from "@/lib/providerBilling";
+ import canvasPanel from "./panels/canvas/canvasHost.vue";
+@@ -169,6 +177,15 @@ const panelOptions = [
+   { label: "文档", value: "document", icon: IconFileText },
+ ];
+ const agentVisible = ref(true);
++const legacyStudioUrl = location.origin + "/#/home";
++async function openStudioChat() {
++  try { await requestStudioSession("openChat"); }
++  catch (error) { ElMessage.error(error instanceof Error ? error.message : "dsh 会话暂不可用"); }
++}
++async function retryStudioPrompt() {
++  try { await sendPendingStudioPrompt(); }
++  catch (error) { ElMessage.error(error instanceof Error ? error.message : "发送失败，请重试"); }
++}
+ const agentWidth = ref(0);
+ const settingsVisible = ref(false);
+ const helpVisible = ref(false);
+diff --git a/apps/web/src/pages/workspace/panels/canvas/components/assetLibrary.vue b/apps/web/src/pages/workspace/panels/canvas/components/assetLibrary.vue
+index b4a147b..ded8e30 100644
+--- a/apps/web/src/pages/workspace/panels/canvas/components/assetLibrary.vue
++++ b/apps/web/src/pages/workspace/panels/canvas/components/assetLibrary.vue
+@@ -57,7 +57,7 @@
+ 
+   <el-dialog v-model="saveVisible" title="保存到素材库" width="460px" alignCenter appendToBody :closeOnClickModal="false" @opened="assetNameInput?.select()">
+     <el-form class="saveForm" labelPosition="top" @submit.prevent="saveAsset">
+-      <el-form-item label="素材名称">
++      <el-form-item label="素材名称" :error="assetNameError">
+         <el-input ref="assetNameInput" v-model="assetName" aria-label="素材名称" placeholder="输入完整文件名" :disabled="saving" @keydown.enter.prevent="saveAsset" />
+       </el-form-item>
+       <el-form-item v-if="outputs.length > 1" label="节点输出">
+@@ -72,7 +72,7 @@
+         </div>
+         <div class="locationPath" :title="saveLocationLabel">{{ saveLocationLabel }}</div>
+         <el-scrollbar class="saveFolderScroll" maxHeight="220px">
+-          <el-tree class="saveFolderTree" :data="folders" nodeKey="path" :props="{ label: 'name' }" :icon="IconChevronRight" :currentNodeKey="saveDirectory" :expandOnClickNode="false" defaultExpandAll highlightCurrent @nodeClick="(entry: AssetEntry) => { if (!saving && saveFolderName === undefined) saveDirectory = entry.path; }">
++          <el-tree class="saveFolderTree" :data="folders" nodeKey="path" :props="{ label: 'name' }" :icon="IconChevronRight" :currentNodeKey="saveDirectory" :expandOnClickNode="false" defaultExpandAll highlightCurrent @nodeClick="selectSaveFolder">
+             <template #default="{ data, node }">
+               <span class="saveFolderEntry"><component :is="node.expanded && !node.isLeaf ? IconFolderOpen : IconFolder" :size="18" aria-hidden="true" /><span>{{ data.name }}</span></span>
+             </template>
+@@ -87,7 +87,7 @@
+     </el-form>
+     <template #footer>
+       <el-button :disabled="saving" @click="saveVisible = false">取消</el-button>
+-      <el-button type="primary" :loading="saving" :disabled="!assetName.trim() || /[\\/]/.test(assetName) || saveFolderName !== undefined" @click="saveAsset">保存</el-button>
++      <el-button type="primary" :loading="saving" :disabled="!!assetNameError || saveFolderName !== undefined" @click="saveAsset">保存</el-button>
+     </template>
+   </el-dialog>
+ </template>
+@@ -108,7 +108,8 @@ import assetBrowser from "./assetBrowser.vue";
+ type AssetEntry = { name: string; path: string; type: "file" | "directory"; children?: AssetEntry[]; draft?: boolean };
+ type AssetOutput = { label: string; output: NodeOutput };
+ 
+-const props = defineProps<{ directory?: string; expanded?: boolean }>();
++interface Props { directory?: string; expanded?: boolean }
++const props = defineProps<Props>();
+ const visible = defineModel<boolean>({ default: false });
+ const saveVisible = ref(false);
+ const saving = ref(false);
+@@ -116,6 +117,7 @@ const entries = ref<AssetEntry[]>([]);
+ const loading = ref(false);
+ const folder = ref(".");
+ const assetName = ref("");
++const assetNameError = computed(() => fileNameError(assetName.value));
+ const assetNameInput = ref<InputInstance>();
+ const saveDirectory = ref(".");
+ const saveFolderName = ref<string>();
+@@ -261,6 +263,10 @@ function selectFolder(entry: AssetEntry) {
+   folder.value = folder.value === path ? "." : path;
+ }
+ 
++function selectSaveFolder(entry: AssetEntry) {
++  if (!saving.value && saveFolderName.value === undefined) saveDirectory.value = entry.path;
++}
++
+ async function startSaveFolder() {
+   saveFolderName.value = "新建文件夹";
+   await nextTick();
+@@ -283,8 +289,18 @@ async function createFolder() {
+   }
+ }
+ 
++function fileNameError(value: string) {
++  const name = value.trim();
++  if (!name) return "请输入名称";
++  if (/[<>:"/\\|?*\x00-\x1f]/.test(name)) return "名称不能包含 < > : \" / \\ | ? * 或控制字符";
++  if (name.endsWith(".")) return "名称不能以点结尾";
++  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) return "名称不能使用系统保留名";
++  return "";
++}
++
+ async function createAssetFolder(parent: string, name: string) {
+-  if (/[\\/]/.test(name)) throw new Error("文件夹名称不能包含斜杠");
++  const error = fileNameError(name);
++  if (error) throw new Error(error);
+   const path = parent === "." ? name : `${parent}/${name}`;
+   await axios.post("/api/assets/mkdir", { path });
+   return path;
+@@ -293,7 +309,9 @@ async function createAssetFolder(parent: string, name: string) {
+ async function openSave(label: string, items: AssetOutput[]) {
+   outputs.value = items;
+   selectedOutput.value = 0;
+-  assetName.value = label.endsWith(extension.value) ? label : `${label}${extension.value}`;
++  let name = label.trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[. ]+$/, "") || "素材";
++  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = `_${name}`;
++  assetName.value = name.endsWith(extension.value) ? name : `${name}${extension.value}`;
+   saveDirectory.value = folder.value;
+   saveFolderName.value = undefined;
+   sourceDirectory = props.directory;
+@@ -308,7 +326,8 @@ async function openSave(label: string, items: AssetOutput[]) {
+ async function saveAsset() {
+   const output = outputs.value[selectedOutput.value]?.output;
+   const name = assetName.value.trim();
+-  if (!output || !name || /[\\/]/.test(name) || saving.value || saveFolderName.value !== undefined) return;
++  if (!output || saving.value || saveFolderName.value !== undefined) return;
++  if (assetNameError.value) return ElMessage.error(assetNameError.value);
+   const path = saveDirectory.value === "." ? name : `${saveDirectory.value}/${name}`;
+   saving.value = true;
+   try {
+diff --git a/apps/web/src/types/components.d.ts b/apps/web/src/types/components.d.ts
+index bccee34..71ebcf2 100644
+--- a/apps/web/src/types/components.d.ts
++++ b/apps/web/src/types/components.d.ts
+@@ -121,6 +121,8 @@ declare module 'vue' {
+     Settings: typeof import('./../components/settings/index.vue')['default']
+     SingleAgentDialog: typeof import('./../components/singleAgentDialog.vue')['default']
+     SkillMenu: typeof import('./../components/agent/skillMenu.vue')['default']
++    StudioConversation: typeof import('./../components/agent/studioConversation.vue')['default']
++    StudioModelPicker: typeof import('./../components/agent/studioModelPicker.vue')['default']
+     TfAccount: typeof import('./../components/settings/tfAccount.vue')['default']
+     TfRechargeDialog: typeof import('./../components/settings/tfRechargeDialog.vue')['default']
+     ToolMessage: typeof import('./../components/agent/toolMessage.vue')['default']
+diff --git a/apps/web/src/components/agent/studioConversation.vue b/apps/web/src/components/agent/studioConversation.vue
+new file mode 100644
+index 0000000..6ed3b3b
+--- /dev/null
++++ b/apps/web/src/components/agent/studioConversation.vue
+@@ -0,0 +1,96 @@
++<template>
++  <section class="agent tf:flex tf:h-full tf:min-h-0 tf:w-full tf:flex-col tf:overflow-hidden tf:pb-2 tf:text-sm">
++    <header class="agentMenu tf:flex tf:shrink-0 tf:items-center tf:gap-2 tf:border-b tf:border-(--el-border-color-light) tf:px-3 tf:py-2">
++      <span class="tf:min-w-0 tf:flex-1 tf:truncate">Toonflow 助手</span>
++      <span role="status" class="tf:text-xs tf:text-(--el-text-color-secondary)">{{ activityLabel }}</span>
++      <el-button text size="small" title="在 dsh 中查看同一会话" @click="openHostChat">dsh 对话</el-button>
++      <slot name="menuActions" />
++      <el-button text circle aria-label="隐藏 AI 对话" title="隐藏 AI 对话" @click="visible = false"><icon-x :size="17" /></el-button>
++    </header>
++    <div class="agentConversation tf:flex tf:min-h-0 tf:flex-1 tf:flex-col tf:overflow-hidden">
++      <div v-if="!studioSessionConnected || state?.error" role="status" class="tf:flex tf:items-center tf:gap-2 tf:px-3 tf:py-2 tf:text-xs">
++        <span class="tf:min-w-0 tf:flex-1">{{ state?.error || studioSessionStatus }}</span>
++        <el-button text size="small" @click="reconnect">重新连接</el-button>
++      </div>
++      <el-button v-if="state?.hasMore" text size="small" :loading="state.loadingOlder" @click="loadOlder">加载更早消息</el-button>
++      <messageList ref="messages" :messages="state?.messages ?? []" :directory="directory" :active="visible" :disabled="!studioSessionConnected"
++        :locked="locked" :busy="!!state?.running" :remoteRunning="!!state?.running" :compacting="false" :voiceActive="voiceActive" shared
++        @fillPrompt="input?.fillPrompt($event)" @copy="copyMessage" />
++      <messageInput ref="input" v-model:selectedModel="selectedModel" v-model:reasoningEffort="reasoningEffort"
++        v-model:voiceActive="voiceActive" v-model:restoringAttachment="restoringAttachment"
++        :active="visible" :disabled="!studioSessionConnected || sending || stopping" :busy="!!state?.running" :remoteRunning="!!state?.running"
++        :directory="directory" :contextWindow="0" :sharedModelLabel="state?.modelLabel || 'dsh 当前模型'" @submit="sendMessage" @stop="stopMessage">
++        <template #modelSelector><studioModelPicker :disabled="locked" /></template>
++      </messageInput>
++    </div>
++  </section>
++</template>
++
++<script setup lang="ts">
++import { computed, ref } from "vue";
++import { IconX } from "@tabler/icons-vue";
++import { ElMessage } from "element-plus";
++import { studioChatState as state, studioSessionConnected, studioSessionStatus, requestStudioSession, sendStudioPrompt } from "@/lib/studioSession";
++import { useWorkspaceStore } from "@/stores/workspace";
++import { writeClipboardText } from "@/lib/clipboard";
++import messageList from "./conversation/messageList.vue";
++import messageInput from "./conversation/messageInput.vue";
++import studioModelPicker from "./studioModelPicker.vue";
++
++const visible = defineModel<boolean>({ default: false });
++const directory = computed(() => useWorkspaceStore().project?.directory);
++const input = ref<InstanceType<typeof messageInput>>();
++const messages = ref<InstanceType<typeof messageList>>();
++const selectedModel = ref("");
++const reasoningEffort = ref("");
++const voiceActive = ref(false);
++const restoringAttachment = ref(false);
++const sending = ref(false);
++const stopping = ref(false);
++const locked = computed(() => !studioSessionConnected.value || sending.value || !!state.value?.running || voiceActive.value || restoringAttachment.value);
++const activityLabel = computed(() => !studioSessionConnected.value ? "连接中" : state.value?.activity === "running" ? "运行中"
++  : state.value?.activity === "stopped" ? "已停止" : state.value?.activity === "error" ? "运行失败" : state.value?.activity === "completed" ? "已完成" : "已同步");
++
++async function sendMessage() {
++  if (locked.value || !directory.value) return;
++  const draft = input.value?.getDraft();
++  if (!draft || (!draft.prompt.trim() && !draft.attachments.length)) return;
++  const mentions = draft.mentions.filter(mention => draft.mentionedIds.includes(mention.id));
++  if (draft.mentionedIds.some(id => !mentions.some(mention => mention.id === id))) return ElMessage.warning("存在无法读取的提及，请删除后重新选择");
++  sending.value = true;
++  try {
++    await sendStudioPrompt(directory.value, draft.prompt.trim(), draft.attachments, mentions);
++    await input.value?.clearDraft();
++    await messages.value?.scrollToLatest();
++  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "发送失败，输入内容已保留"); }
++  finally { sending.value = false; }
++}
++
++async function stopMessage() {
++  if (stopping.value || !state.value?.running) return;
++  stopping.value = true;
++  try { await requestStudioSession("stop"); }
++  catch (error) { ElMessage.error(error instanceof Error ? error.message : "停止失败，请重试"); }
++  finally { stopping.value = false; }
++}
++
++async function reconnect() {
++  try { await requestStudioSession("bind"); }
++  catch (error) { ElMessage.error(error instanceof Error ? error.message : "连接失败，请重试"); }
++}
++
++async function openHostChat() {
++  try { await requestStudioSession("openChat"); }
++  catch (error) { ElMessage.error(error instanceof Error ? error.message : "打开会话失败"); }
++}
++
++async function loadOlder() {
++  try { await requestStudioSession("older"); }
++  catch (error) { ElMessage.error(error instanceof Error ? error.message : "加载历史失败"); }
++}
++
++async function copyMessage(content: string) {
++  try { await writeClipboardText(content); ElMessage.success("已复制"); }
++  catch { ElMessage.error("复制失败，请重试"); }
++}
++</script>
+diff --git a/apps/web/src/lib/studioDiscussion.ts b/apps/web/src/lib/studioDiscussion.ts
+new file mode 100644
+index 0000000..86dae05
+--- /dev/null
++++ b/apps/web/src/lib/studioDiscussion.ts
+@@ -0,0 +1,36 @@
++import { translate } from "@toonflow/i18n";
++import type { AgentMessage } from "@/components/agent/types";
++import { mentionPlainText } from "@/components/agent/mentionText";
++import { readTextAttachment } from "@/components/agent/textAttachments";
++
++/** 携带文本附件和已保存媒体路径；原消息与原附件保持不变。 */
++export async function shareStudioMessage(message: Pick<AgentMessage, "content" | "attachments" | "mentions">, directory?: string, canvasId?: string): Promise<void> {
++  const parts = ["来自 AI短剧工作台（Toonflow）的协作资料", "工作目录：" + (directory || "尚未打开项目"), "当前画布：" + (canvasId || "尚未选择"), mentionPlainText(message.content, message.mentions)];
++  for (const attachment of message.attachments ?? []) {
++    if (attachment.mimeType === "text/plain") parts.push("文本附件：" + attachment.name + "\n" + await readTextAttachment(attachment, directory));
++    else if (attachment.path) parts.push("附件：" + attachment.name + "\n相对工作目录的路径：" + attachment.path);
++    else throw new Error(translate("请先保存图片、视频或文档附件，再交给 App 协作"));
++  }
++  await requestStudioDiscussion(parts.join("\n\n"));
++}
++
++
++/** 将用户主动选择的资料交给工作室宿主，仅写入草稿，等待用户发送。 */
++export function requestStudioDiscussion(text: string): Promise<void> {
++  const origin = window.location.ancestorOrigins?.[0] || (document.referrer ? new URL(document.referrer).origin : "");
++  if (!origin || origin === "null" || window.parent === window) return Promise.reject(new Error(translate("请在 App 工作室中使用协作")));
++  if (text.length > 100000) return Promise.reject(new Error(translate("协作内容不能超过 100000 字符，请精简后重试")));
++  const requestId = crypto.randomUUID();
++  return new Promise((resolve, reject) => {
++    const cleanup = () => { clearTimeout(timer); window.removeEventListener("message", receive); };
++    const receive = (event: MessageEvent) => {
++      if (event.source !== window.parent || event.origin !== origin || event.data?.type !== "dsh:studio:discussionResult" || event.data.requestId !== requestId) return;
++      cleanup();
++      if (event.data.accepted === true) resolve();
++      else reject(new Error(typeof event.data.message === "string" ? event.data.message : translate("App 协作暂不可用")));
++    };
++    const timer = setTimeout(() => { cleanup(); reject(new Error(translate("App 协作未响应，请确认已打开 App 对话后重试"))); }, 7000);
++    window.addEventListener("message", receive);
++    window.parent.postMessage({ type: "dsh:studio:discuss", requestId, text }, origin);
++  });
++}
+diff --git a/apps/web/src/lib/studioSession.css b/apps/web/src/lib/studioSession.css
+new file mode 100644
+index 0000000..dc3a6e2
+--- /dev/null
++++ b/apps/web/src/lib/studioSession.css
+@@ -0,0 +1,274 @@
++/*! tailwindcss v4.3.3 | MIT License | https://tailwindcss.com */
++@layer properties;
++@layer theme, utilities;
++@layer theme {
++  :root, :host {
++    --tf-color-white: #fff;
++    --tf-spacing: 0.25rem;
++    --tf-text-xs: 0.75rem;
++    --tf-text-xs--line-height: calc(1 / 0.75);
++    --tf-text-sm: 0.875rem;
++    --tf-text-sm--line-height: calc(1.25 / 0.875);
++    --tf-radius-sm: 0.25rem;
++    --tf-radius-lg: 0.5rem;
++    --tf-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
++  }
++}
++@layer utilities {
++  .tf\:absolute {
++    position: absolute;
++  }
++  .tf\:relative {
++    position: relative;
++  }
++  .tf\:top-4 {
++    top: calc(var(--tf-spacing) * 4);
++  }
++  .tf\:right-6 {
++    right: calc(var(--tf-spacing) * 6);
++  }
++  .tf\:bottom-full {
++    bottom: 100%;
++  }
++  .tf\:left-0 {
++    left: 0px;
++  }
++  .tf\:z-20 {
++    z-index: 20;
++  }
++  .tf\:z-50 {
++    z-index: 50;
++  }
++  .tf\:m-0 {
++    margin: 0px;
++  }
++  .tf\:mb-2 {
++    margin-bottom: calc(var(--tf-spacing) * 2);
++  }
++  .tf\:flex {
++    display: flex;
++  }
++  .tf\:h-full {
++    height: 100%;
++  }
++  .tf\:min-h-0 {
++    min-height: 0px;
++  }
++  .tf\:w-72 {
++    width: calc(var(--tf-spacing) * 72);
++  }
++  .tf\:w-full {
++    width: 100%;
++  }
++  .tf\:max-w-48 {
++    max-width: calc(var(--tf-spacing) * 48);
++  }
++  .tf\:max-w-\[75vw\] {
++    max-width: 75vw;
++  }
++  .tf\:min-w-0 {
++    min-width: 0px;
++  }
++  .tf\:flex-1 {
++    flex: 1;
++  }
++  .tf\:shrink-0 {
++    flex-shrink: 0;
++  }
++  .tf\:cursor-pointer {
++    cursor: pointer;
++  }
++  .tf\:list-none {
++    list-style-type: none;
++  }
++  .tf\:flex-col {
++    flex-direction: column;
++  }
++  .tf\:items-center {
++    align-items: center;
++  }
++  .tf\:gap-1 {
++    gap: var(--tf-spacing);
++  }
++  .tf\:gap-2 {
++    gap: calc(var(--tf-spacing) * 2);
++  }
++  .tf\:gap-3 {
++    gap: calc(var(--tf-spacing) * 3);
++  }
++  .tf\:truncate {
++    overflow: hidden;
++    text-overflow: ellipsis;
++    white-space: nowrap;
++  }
++  .tf\:overflow-hidden {
++    overflow: hidden;
++  }
++  .tf\:rounded {
++    border-radius: 0.25rem;
++  }
++  .tf\:rounded-lg {
++    border-radius: var(--tf-radius-lg);
++  }
++  .tf\:border {
++    border-style: var(--tw-border-style);
++    border-width: 1px;
++  }
++  .tf\:border-0 {
++    border-style: var(--tw-border-style);
++    border-width: 0px;
++  }
++  .tf\:border-b {
++    border-bottom-style: var(--tw-border-style);
++    border-bottom-width: 1px;
++  }
++  .tf\:border-\(--el-border-color\) {
++    border-color: var(--el-border-color);
++  }
++  .tf\:border-\(--el-border-color-light\) {
++    border-color: var(--el-border-color-light);
++  }
++  .tf\:bg-\(--el-bg-color\) {
++    background-color: var(--el-bg-color);
++  }
++  .tf\:bg-\(--el-bg-color-overlay\) {
++    background-color: var(--el-bg-color-overlay);
++  }
++  .tf\:bg-\(--el-fill-color\) {
++    background-color: var(--el-fill-color);
++  }
++  .tf\:p-2 {
++    padding: calc(var(--tf-spacing) * 2);
++  }
++  .tf\:p-3 {
++    padding: calc(var(--tf-spacing) * 3);
++  }
++  .tf\:px-3 {
++    padding-inline: calc(var(--tf-spacing) * 3);
++  }
++  .tf\:py-1 {
++    padding-block: var(--tf-spacing);
++  }
++  .tf\:py-2 {
++    padding-block: calc(var(--tf-spacing) * 2);
++  }
++  .tf\:pb-2 {
++    padding-bottom: calc(var(--tf-spacing) * 2);
++  }
++  .tf\:text-sm {
++    font-size: var(--tf-text-sm);
++    line-height: var(--tw-leading, var(--tf-text-sm--line-height));
++  }
++  .tf\:text-xs {
++    font-size: var(--tf-text-xs);
++    line-height: var(--tw-leading, var(--tf-text-xs--line-height));
++  }
++  .tf\:text-\(--el-color-danger\) {
++    color: var(--el-color-danger);
++  }
++  .tf\:text-\(--el-text-color-secondary\) {
++    color: var(--el-text-color-secondary);
++  }
++  .tf\:text-inherit {
++    color: inherit;
++  }
++  .tf\:shadow {
++    --tw-shadow: 0 1px 3px 0 var(--tw-shadow-color, rgb(0 0 0 / 0.1)), 0 1px 2px -1px var(--tw-shadow-color, rgb(0 0 0 / 0.1));
++    box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
++  }
++  .tf\:shadow-lg {
++    --tw-shadow: 0 10px 15px -3px var(--tw-shadow-color, rgb(0 0 0 / 0.1)), 0 4px 6px -4px var(--tw-shadow-color, rgb(0 0 0 / 0.1));
++    box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
++  }
++}
++@property --tw-border-style {
++  syntax: "*";
++  inherits: false;
++  initial-value: solid;
++}
++@property --tw-shadow {
++  syntax: "*";
++  inherits: false;
++  initial-value: 0 0 #0000;
++}
++@property --tw-shadow-color {
++  syntax: "*";
++  inherits: false;
++}
++@property --tw-shadow-alpha {
++  syntax: "<percentage>";
++  inherits: false;
++  initial-value: 100%;
++}
++@property --tw-inset-shadow {
++  syntax: "*";
++  inherits: false;
++  initial-value: 0 0 #0000;
++}
++@property --tw-inset-shadow-color {
++  syntax: "*";
++  inherits: false;
++}
++@property --tw-inset-shadow-alpha {
++  syntax: "<percentage>";
++  inherits: false;
++  initial-value: 100%;
++}
++@property --tw-ring-color {
++  syntax: "*";
++  inherits: false;
++}
++@property --tw-ring-shadow {
++  syntax: "*";
++  inherits: false;
++  initial-value: 0 0 #0000;
++}
++@property --tw-inset-ring-color {
++  syntax: "*";
++  inherits: false;
++}
++@property --tw-inset-ring-shadow {
++  syntax: "*";
++  inherits: false;
++  initial-value: 0 0 #0000;
++}
++@property --tw-ring-inset {
++  syntax: "*";
++  inherits: false;
++}
++@property --tw-ring-offset-width {
++  syntax: "<length>";
++  inherits: false;
++  initial-value: 0px;
++}
++@property --tw-ring-offset-color {
++  syntax: "*";
++  inherits: false;
++  initial-value: #fff;
++}
++@property --tw-ring-offset-shadow {
++  syntax: "*";
++  inherits: false;
++  initial-value: 0 0 #0000;
++}
++@layer properties {
++  @supports ((-webkit-hyphens: none) and (not (margin-trim: inline))) or ((-moz-orient: inline) and (not (color:rgb(from red r g b)))) {
++    *, ::before, ::after, ::backdrop {
++      --tw-border-style: solid;
++      --tw-shadow: 0 0 #0000;
++      --tw-shadow-color: initial;
++      --tw-shadow-alpha: 100%;
++      --tw-inset-shadow: 0 0 #0000;
++      --tw-inset-shadow-color: initial;
++      --tw-inset-shadow-alpha: 100%;
++      --tw-ring-color: initial;
++      --tw-ring-shadow: 0 0 #0000;
++      --tw-inset-ring-color: initial;
++      --tw-inset-ring-shadow: 0 0 #0000;
++      --tw-ring-inset: initial;
++      --tw-ring-offset-width: 0px;
++      --tw-ring-offset-color: #fff;
++      --tw-ring-offset-shadow: 0 0 #0000;
++    }
++  }
++}
+diff --git a/apps/web/src/lib/studioSession.ts b/apps/web/src/lib/studioSession.ts
+new file mode 100644
+index 0000000..fcfe33f
+--- /dev/null
++++ b/apps/web/src/lib/studioSession.ts
+@@ -0,0 +1,187 @@
++import { onScopeDispose, ref, watch } from "vue";
++import "./studioSession.css";
++import { useRouter } from "vue-router";
++import { isStudioEmbedded } from "./platform";
++import type { AgentAttachment, AgentMessage } from "@/components/agent/types";
++import type { AgentMention } from "@toonflow/server/agent/types";
++import { mentionPlainText } from "@/components/agent/mentionText";
++import { readTextAttachment } from "@/components/agent/textAttachments";
++import useWorkspaceFiles from "@/lib/workspaceFiles";
++import { useWorkspaceStore } from "@/stores/workspace";
++
++interface StudioContext { directory: string | null; canvasId: string | null }
++export interface StudioModelChoice { mode: "system" | "custom"; selection?: { provider: string; model: string; reasoningEffort?: string } }
++export const studioSessionStatus = ref("正在连接 dsh 会话");
++interface StudioChatState {
++  revision: number;
++  running: boolean;
++  activity: "running" | "stopped" | "completed" | "error" | "idle";
++  hasMore: boolean;
++  loadingOlder: boolean;
++  modelLabel: string;
++  modelMode: "system" | "custom";
++  modelSelection: StudioModelChoice["selection"] | null;
++  modelGroups: { id: string; name: string; models: { id: string; name: string; reasoning?: { defaultEffort?: string; efforts: { id: string; name: string }[] } }[] }[];
++  modelStatus: string;
++  modelError: string | null;
++  messages: AgentMessage[];
++  error?: string;
++}
++export const studioChatState = ref<StudioChatState | null>(null);
++export const studioSessionConnected = ref(false);
++let currentContext: StudioContext = { directory: null, canvasId: null };
++let currentChannel = crypto.randomUUID();
++let boundSessionId = "";
++let pendingSend: Promise<void> | undefined;
++const studioOrigin = window.location.ancestorOrigins?.[0] || (document.referrer ? new URL(document.referrer).origin : "");
++
++/** 仅向直属工作室发送用户动作，不在网页中复制模型凭据或启动第二个 Agent。 */
++export function requestStudioSession(action: "bind" | "send" | "openChat" | "release" | "stop" | "older" | "model" | "modelSettings", context = currentContext, text?: string, modelChoice?: StudioModelChoice): Promise<{ sessionId?: string }> {
++  const origin = studioOrigin;
++  if (!isStudioEmbedded || !origin || origin === "null") return Promise.reject(new Error("请在 App 工作室中使用 dsh 会话"));
++  const requestId = crypto.randomUUID();
++  const channel = currentChannel;
++  // 跨窗口只发送普通字段，避免 Vue 响应式代理无法克隆。
++  const choice = modelChoice ? { mode: modelChoice.mode, ...(modelChoice.selection ? { selection: {
++    provider: modelChoice.selection.provider, model: modelChoice.selection.model,
++    ...(modelChoice.selection.reasoningEffort === undefined ? {} : { reasoningEffort: modelChoice.selection.reasoningEffort }),
++  } } : {}) } : undefined;
++  return new Promise((resolve, reject) => {
++    const cleanup = () => { clearTimeout(timer); window.removeEventListener("message", receive); };
++    const receive = (event: MessageEvent) => {
++      if (event.source !== window.parent || event.origin !== origin || event.data?.type !== "dsh:studio:sessionResult" || event.data.requestId !== requestId) return;
++      cleanup();
++      if (event.data.accepted === true) {
++        if (action === "bind" && channel === currentChannel && context.directory === currentContext.directory) {
++          boundSessionId = event.data.sessionId ?? "";
++          studioSessionConnected.value = true;
++          studioSessionStatus.value = "已连接 dsh 共享会话";
++        }
++        resolve({ sessionId: event.data.sessionId });
++      } else reject(new Error(event.data.message || "dsh 会话暂不可用"));
++    };
++    const timer = setTimeout(() => { cleanup(); reject(new Error("dsh 会话连接超时，请点击 dsh 对话重试")); }, 45000);
++    window.addEventListener("message", receive);
++    window.parent.postMessage({ type: "dsh:studio:session", requestId, channelId: channel, action, ...context, text, modelChoice: choice }, origin);
++  });
++}
++
++export function useStudioSession(read: () => StudioContext) {
++  if (!isStudioEmbedded) return;
++  const router = useRouter();
++  let revision = 0;
++  const context = () => router.currentRoute.value.path === "/workspace" ? read() : { directory: null, canvasId: null };
++  const connect = async (value: StudioContext) => {
++    const version = ++revision;
++    currentContext = value;
++    studioSessionConnected.value = false;
++    boundSessionId = "";
++    try {
++      if (!currentContext.directory) { studioChatState.value = null; await requestStudioSession("release"); return; }
++      currentChannel = crypto.randomUUID();
++      studioChatState.value = null;
++      studioSessionStatus.value = "正在连接 dsh 会话";
++      const result = await requestStudioSession("bind");
++      if (version === revision) {
++        boundSessionId = result.sessionId ?? "";
++        studioSessionConnected.value = true;
++        studioSessionStatus.value = "已连接 dsh 共享会话";
++      }
++      if (version === revision) await sendPendingStudioPrompt();
++    } catch (error) { if (version === revision) studioSessionStatus.value = error instanceof Error ? error.message : "连接失败，请重试"; }
++  };
++  watch(() => JSON.stringify(context()), json => connect(JSON.parse(json)), { immediate: true, flush: "post" });
++  const resume = (event: MessageEvent) => {
++    if (event.source !== window.parent || event.origin !== studioOrigin) return;
++    const data = event.data;
++    if (data?.type === "dsh:studio:resume") { void connect(context()); return; }
++    if (data?.type !== "dsh:studio:state" || data.channelId !== currentChannel || data.directory !== currentContext.directory
++      || typeof data.sessionId !== "string" || (boundSessionId && data.sessionId !== boundSessionId) || !validChatState(data.state)
++      || data.state.revision <= (studioChatState.value?.revision ?? -1)) return;
++    // 保留用户展开的思考和工具卡片，流式更新只替换消息数据。
++    const previous = new Map(studioChatState.value?.messages.flatMap(message => message.parts ?? []).map(part => [part.id, part]));
++    for (const message of data.state.messages) for (const part of message.parts ?? []) {
++      const old = previous.get(part.id);
++      if (part.type !== "text" && old && old.type !== "text" && old.type === part.type) part.collapsed = old.collapsed;
++    }
++    studioChatState.value = data.state;
++  };
++  window.addEventListener("message", resume);
++  onScopeDispose(() => { revision++; studioSessionConnected.value = false; studioChatState.value = null; window.removeEventListener("message", resume); void requestStudioSession("release").catch(() => {}); });
++}
++
++/** 对跨窗口消息仅接受聊天展示所需字段，拒绝损坏的推送。 */
++function validChatState(value: unknown): value is StudioChatState {
++  if (!value || typeof value !== "object") return false;
++  const state = value as Record<string, unknown>;
++  if (!Number.isSafeInteger(state.revision) || typeof state.running !== "boolean" || typeof state.hasMore !== "boolean"
++    || !["running", "stopped", "completed", "error", "idle"].includes(String(state.activity))
++    || typeof state.loadingOlder !== "boolean" || typeof state.modelLabel !== "string" || !Array.isArray(state.messages)
++    || !["system", "custom"].includes(String(state.modelMode)) || !Array.isArray(state.modelGroups)
++    || !state.modelGroups.every(group => group && typeof group.id === "string" && typeof group.name === "string" && Array.isArray(group.models)
++      && group.models.every((model: Record<string, unknown>) => model && typeof model.id === "string" && typeof model.name === "string"
++        && (model.reasoning === undefined || validReasoning(model.reasoning))))
++    || (state.modelSelection !== null && !validSelection(state.modelSelection))
++    || (state.error !== undefined && typeof state.error !== "string")) return false;
++  return state.messages.every(message => message && typeof message.id === "string" && ["user", "assistant"].includes(message.role)
++    && typeof message.content === "string" && (message.error === undefined || typeof message.error === "string")
++    && (message.parts === undefined || (Array.isArray(message.parts) && message.parts.every((part: Record<string, unknown>) => part && typeof part.id === "string"
++      && (["text", "thinking"].includes(String(part.type)) ? typeof part.content === "string" : part.type === "tool" && validTool(part.tool))))));
++}
++
++function validSelection(value: unknown): boolean {
++  if (!value || typeof value !== "object") return false;
++  const selection = value as Record<string, unknown>;
++  return typeof selection.provider === "string" && typeof selection.model === "string" && (selection.reasoningEffort === undefined || typeof selection.reasoningEffort === "string");
++}
++
++function validReasoning(value: unknown): boolean {
++  if (!value || typeof value !== "object") return false;
++  const reasoning = value as Record<string, unknown>;
++  return (reasoning.defaultEffort === undefined || typeof reasoning.defaultEffort === "string") && Array.isArray(reasoning.efforts)
++    && reasoning.efforts.every(effort => effort && typeof effort.id === "string" && typeof effort.name === "string");
++}
++
++function validTool(value: unknown): boolean {
++  if (!value || typeof value !== "object") return false;
++  const tool = value as Record<string, unknown>;
++  return typeof tool.id === "string" && typeof tool.name === "string" && ["running", "success", "error", "interrupted"].includes(String(tool.status))
++    && (tool.result === undefined || typeof tool.result === "string") && (tool.args === undefined || (!!tool.args && typeof tool.args === "object" && !Array.isArray(tool.args)));
++}
++
++/** 接受后才清除首页需求；连接失败时可在当前项目重试。 */
++export function sendPendingStudioPrompt(): Promise<void> {
++  if (pendingSend) return pendingSend;
++  const workspace = useWorkspaceStore();
++  const message = workspace.pendingAgentMessage;
++  if (!message || message.directory !== currentContext.directory) return Promise.resolve();
++  const sending = sendStudioPrompt(message.directory, message.prompt, message.attachments ?? []).then(() => {
++    if (workspace.pendingAgentMessage === message) workspace.pendingAgentMessage = null;
++  });
++  pendingSend = sending.finally(() => { pendingSend = undefined; });
++  return pendingSend;
++}
++
++/** 附件先保存在项目内，以原路径交给 dsh；文本附件同时带入消息。 */
++export async function sendStudioPrompt(directory: string, prompt: string, attachments: AgentAttachment[], mentions: AgentMention[] = []) {
++  const files = useWorkspaceFiles(directory);
++  if (attachments.some(item => item.file)) for (const path of ["assets", "assets/chat"]) await files.mkdir(path).catch(error => {
++    if (error?.response?.data?.data?.code !== "EEXIST") throw error;
++  });
++  const parts = [mentionPlainText(prompt, mentions)];
++  if (mentions.length) parts.push("画布与素材引用：\n" + JSON.stringify(mentions));
++  for (const attachment of attachments) {
++    if (attachment.file) {
++      const extension = attachment.name.match(/\.[a-zA-Z0-9]{1,10}$/)?.[0].toLowerCase() ?? "";
++      const path = "assets/chat/" + crypto.randomUUID() + extension;
++      await files.write(path, attachment.file, true);
++      attachment.path = path;
++      attachment.file = undefined;
++    }
++    parts.push("附件：" + attachment.name + "\n相对路径：" + attachment.path);
++    if (attachment.mimeType === "text/plain") parts.push(await readTextAttachment(attachment, directory));
++  }
++  const text = parts.join("\n\n");
++  if (text.length > 100000) throw new Error("内容超过 100000 字符，请在 dsh 对话中引用附件路径");
++  await requestStudioSession("send", { directory, canvasId: currentContext.directory === directory ? currentContext.canvasId : null }, text);
++}
+diff --git a/apps/web/src/components/agent/studioModelPicker.vue b/apps/web/src/components/agent/studioModelPicker.vue
+new file mode 100644
+index 0000000..ea1212b
+--- /dev/null
++++ b/apps/web/src/components/agent/studioModelPicker.vue
+@@ -0,0 +1,71 @@
++<template>
++  <details class="tf:relative tf:min-w-0 tf:flex-1 tf:text-xs">
++    <summary class="tf:cursor-pointer tf:list-none tf:truncate tf:py-1" :title="state?.modelLabel">
++      {{ state?.modelMode === 'custom' ? '自选' : '跟随系统' }} · {{ state?.modelLabel || '正在读取模型' }} ▾
++    </summary>
++    <div class="tf:absolute tf:bottom-full tf:left-0 tf:z-50 tf:mb-2 tf:flex tf:w-72 tf:max-w-[75vw] tf:flex-col tf:gap-3 tf:rounded-lg tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color-overlay) tf:p-3 tf:shadow-lg">
++      <label class="tf:flex tf:flex-col tf:gap-1">文本模型
++        <select aria-label="文本模型来源" :value="state?.modelMode || 'system'" :disabled="disabled || saving" class="tf:rounded tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color) tf:p-2 tf:text-inherit" @change="changeMode">
++          <option value="system">跟随系统默认模型</option><option value="custom">为当前项目自选模型</option>
++        </select>
++      </label>
++      <label v-if="state?.modelMode === 'custom'" class="tf:flex tf:flex-col tf:gap-1">已配置的 dsh 模型
++        <select aria-label="项目文本模型" :value="selectedKey" :disabled="disabled || saving" class="tf:w-full tf:rounded tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color) tf:p-2 tf:text-inherit" @change="changeModel">
++          <option v-if="!models.some(item => item.key === selectedKey)" :value="selectedKey" disabled>{{ state.modelLabel || '请选择模型' }}</option>
++          <optgroup v-for="group in state.modelGroups" :key="group.id" :label="group.name"><option v-for="model in group.models" :key="model.id" :value="modelKey(group.id, model.id)">{{ model.name }}</option></optgroup>
++        </select>
++      </label>
++      <label v-if="state?.modelMode === 'custom' && efforts.length" class="tf:flex tf:flex-col tf:gap-1">思考强度
++        <select aria-label="模型思考强度" :value="state.modelSelection?.reasoningEffort || currentModel?.reasoning?.defaultEffort" :disabled="disabled || saving" class="tf:rounded tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color) tf:p-2 tf:text-inherit" @change="changeEffort"><option v-for="effort in efforts" :key="effort.id" :value="effort.id">{{ effort.name }}</option></select>
++      </label>
++      <p class="tf:m-0 tf:text-(--el-text-color-secondary)">{{ state?.modelMode === 'custom' ? '只修改当前项目，下次发送生效。' : '连接和发送前同步 dsh 默认模型。' }}</p>
++      <p v-if="error || state?.modelError" role="alert" class="tf:m-0 tf:text-(--el-color-danger)">{{ error || state?.modelError }}</p>
++      <button type="button" :disabled="saving" class="tf:cursor-pointer tf:rounded tf:border-0 tf:bg-(--el-fill-color) tf:p-2 tf:text-inherit" @click="openSettings">添加 / 管理自定义模型…</button>
++    </div>
++  </details>
++</template>
++
++<script setup lang="ts">
++import { computed, ref } from "vue";
++import { ElMessage } from "element-plus";
++import { studioChatState as state, requestStudioSession, type StudioModelChoice } from "@/lib/studioSession";
++
++interface Props { disabled: boolean }
++defineProps<Props>();
++const saving = ref(false);
++const error = ref("");
++const modelKey = (provider: string, model: string) => JSON.stringify([provider, model]);
++const models = computed(() => state.value?.modelGroups.flatMap(group => group.models.map(model => ({ ...model, provider: group.id, key: modelKey(group.id, model.id) }))) ?? []);
++const selectedKey = computed(() => state.value?.modelSelection ? modelKey(state.value.modelSelection.provider, state.value.modelSelection.model) : "");
++const currentModel = computed(() => models.value.find(model => model.key === selectedKey.value));
++const efforts = computed(() => currentModel.value?.reasoning?.efforts ?? []);
++
++async function select(choice: StudioModelChoice) {
++  if (saving.value) return;
++  saving.value = true;
++  error.value = "";
++  try { await requestStudioSession("model", undefined, undefined, choice); }
++  catch (cause) { error.value = cause instanceof Error ? cause.message : "模型切换失败，请重试"; }
++  finally { saving.value = false; }
++}
++
++function changeMode(event: Event) {
++  const mode = (event.target as HTMLSelectElement).value;
++  if (mode === "system") void select({ mode });
++  else if (state.value?.modelSelection) void select({ mode: "custom", selection: state.value.modelSelection });
++}
++
++function changeModel(event: Event) {
++  const model = models.value.find(item => item.key === (event.target as HTMLSelectElement).value);
++  if (model) void select({ mode: "custom", selection: { provider: model.provider, model: model.id, reasoningEffort: model.reasoning?.defaultEffort } });
++}
++
++function changeEffort(event: Event) {
++  if (state.value?.modelSelection) void select({ mode: "custom", selection: { ...state.value.modelSelection, reasoningEffort: (event.target as HTMLSelectElement).value } });
++}
++
++async function openSettings() {
++  try { await requestStudioSession("modelSettings"); ElMessage.info("在 dsh 设置的模型页面添加供应商或模型，保存后返回此处选择。"); }
++  catch (cause) { error.value = cause instanceof Error ? cause.message : "无法打开模型设置"; }
++}
++</script>
+diff --git a/apps/web/index.html b/apps/web/index.html
+index 55e1905..dc21f05 100644
+--- a/apps/web/index.html
++++ b/apps/web/index.html
+@@ -7,6 +7,7 @@
+   </head>
+   <body>
+     <div id="app"></div>
++    <script src="/studioControl.js"></script>
+     <script type="module" src="/src/main.ts"></script>
+   </body>
+ </html>
+diff --git a/apps/web/public/studioControl.js b/apps/web/public/studioControl.js
+new file mode 100644
+index 0000000..3fcbf65
+--- /dev/null
++++ b/apps/web/public/studioControl.js
+@@ -0,0 +1,194 @@
++"use strict";
++(() => {
++  // D:/demo2/studio-library/packages/sdk/controlBridge.ts
++  (() => {
++    if (window.parent === window || window.__dshStudioControl) return;
++    window.__dshStudioControl = true;
++    const requestType = "dsh:studio:control";
++    const resultType = "dsh:studio:controlResult";
++    const controls = /* @__PURE__ */ new Map();
++    const seen = /* @__PURE__ */ new Set();
++    const cancelled = /* @__PURE__ */ new Set();
++    const allowedParents = /* @__PURE__ */ new Set([location.origin, "dsh-app://app"]);
++    const isLocal = (url) => ["http:", "https:"].includes(url.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
++    try {
++      const parent = new URL(document.referrer);
++      if (isLocal(parent) && parent.port === "5173") allowedParents.add(parent.origin);
++    } catch {
++    }
++    const redact = (value) => value.replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[\u51ED\u636E\u5DF2\u9690\u85CF]").replace(/\b(?:sk-[\w-]+|[a-f0-9]{24,})\b/gi, "[\u51ED\u636E\u5DF2\u9690\u85CF]").slice(0, 12e3);
++    const visible = (node) => {
++      if (node.closest('[hidden],[inert],[aria-hidden="true"]')) return false;
++      if (getComputedStyle(node).pointerEvents === "none") return false;
++      for (let item = node; item; item = item.parentElement) {
++        const style = getComputedStyle(item);
++        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
++      }
++      return node.getClientRects().length > 0;
++    };
++    const label = (node) => {
++      const labelled = node.getAttribute("aria-labelledby")?.split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
++      const field = node;
++      return (node.getAttribute("aria-label") || labelled || field.labels?.[0]?.textContent || node.getAttribute("placeholder") || node.getAttribute("title") || node.innerText || node.textContent || field.name || "").trim().replace(/\s+/g, " ").slice(0, 180);
++    };
++    const sensitive = (node) => node.matches('input[type="password"],input[type="file"]') || /密码|密钥|令牌|secret|token|api.?key|password/i.test(label(node) + " " + node.name + " " + node.id);
++    let generation = 0;
++    const pageId = crypto.randomUUID().slice(0, 8);
++    function snapshot(offset = 0) {
++      controls.clear();
++      generation += 1;
++      const nodes = [...document.querySelectorAll('button,a[href],input:not([type="hidden"]),textarea,select,summary,[role="button"],[role="tab"],[role="checkbox"],[contenteditable="true"],[tabindex]')].filter(visible);
++      const entries = nodes.slice(offset, offset + 100).map((node, index) => {
++        const id = pageId + "-c" + generation + "-" + (offset + index);
++        controls.set(id, node);
++        const input = node;
++        const secret = sensitive(node);
++        return {
++          id,
++          tag: node.tagName.toLowerCase(),
++          label: redact(label(node)),
++          type: input.type || node.getAttribute("role") || void 0,
++          disabled: node.matches(':disabled,[aria-disabled="true"]'),
++          sensitive: secret || void 0,
++          value: !secret && node.matches("input,textarea,select") ? redact(input.value) : void 0,
++          checked: node.matches('input[type="checkbox"],input[type="radio"]') ? input.checked : void 0,
++          selected: node.getAttribute("aria-pressed") ?? node.getAttribute("aria-selected") ?? (node.classList.contains("is-active") ? "true" : void 0),
++          options: node instanceof HTMLSelectElement ? [...node.options].slice(0, 80).map((option) => ({ value: option.value, label: redact(option.text), disabled: option.disabled })) : void 0
++        };
++      });
++      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
++      const text = [];
++      let length = 0;
++      while (walker.nextNode() && length < 12e3) {
++        const parent = walker.currentNode.parentElement;
++        if (!parent || parent.closest("script,style,noscript,input,textarea,[data-sensitive]") || !visible(parent)) continue;
++        const value = walker.currentNode.textContent?.trim();
++        if (value) {
++          text.push(value);
++          length += value.length;
++        }
++      }
++      const result = { title: document.title, path: location.pathname, text: redact(text.join("\n")), controls: entries, totalControls: nodes.length, nextOffset: offset + entries.length < nodes.length ? offset + entries.length : null };
++      while (JSON.stringify(result).length > 48e3 && entries.length > 1) entries.pop();
++      result.nextOffset = offset + entries.length < nodes.length ? offset + entries.length : null;
++      return result;
++    }
++    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
++    async function perform(command) {
++      if (command.action === "open" || command.action === "read") return snapshot(command.offset ?? 0);
++      const node = command.target ? controls.get(command.target) : void 0;
++      if (command.target && (!node?.isConnected || !visible(node))) throw new Error("\u9875\u9762\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0 read \u83B7\u53D6\u63A7\u4EF6");
++      if (node?.matches(':disabled,[aria-disabled="true"]')) throw new Error("\u63A7\u4EF6\u5F53\u524D\u4E0D\u53EF\u7528");
++      if (node && sensitive(node)) throw new Error("\u654F\u611F\u8BBE\u7F6E\u8BF7\u7531\u7528\u6237\u5728\u9875\u9762\u4E2D\u64CD\u4F5C");
++      if (command.action === "scroll") {
++        const horizontal = ["left", "right"].includes(command.direction);
++        let container = node ?? document.elementFromPoint(innerWidth / 2, innerHeight / 2);
++        while (container && !(horizontal ? container.scrollWidth > container.clientWidth : container.scrollHeight > container.clientHeight)) container = container.parentElement;
++        container ??= document.scrollingElement;
++        const amount = ["up", "left"].includes(command.direction) ? -480 : 480;
++        container.scrollBy({ [horizontal ? "left" : "top"]: amount, behavior: "instant" });
++      } else {
++        if (!node) throw new Error("\u8BF7\u63D0\u4F9B\u6700\u8FD1 read \u8FD4\u56DE\u7684\u63A7\u4EF6 id");
++        node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
++        node.focus({ preventScroll: true });
++        if (command.action === "click") {
++          if (node instanceof HTMLAnchorElement && !["http:", "https:", "dsh-app:"].includes(new URL(node.href).protocol)) throw new Error("\u4E0D\u652F\u6301\u6B64\u94FE\u63A5\u7C7B\u578B");
++          node.click();
++        } else if (command.action === "fill") {
++          if (typeof command.value !== "string" || command.value.length > 8e3) throw new Error("\u8F93\u5165\u5185\u5BB9\u65E0\u6548");
++          if (node.matches('input:not([type="checkbox"]):not([type="radio"]),textarea') && !node.readOnly) {
++            const prototype = node instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
++            Object.getOwnPropertyDescriptor(prototype, "value").set.call(node, command.value);
++            node.dispatchEvent(new Event("input", { bubbles: true }));
++            node.dispatchEvent(new Event("change", { bubbles: true }));
++          } else if (node.isContentEditable) {
++            node.textContent = command.value;
++            node.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: command.value }));
++          } else throw new Error("\u8BE5\u63A7\u4EF6\u4E0D\u80FD\u586B\u5199\uFF0C\u8BF7\u4F7F\u7528 click \u6216 select");
++        } else if (command.action === "select" && node instanceof HTMLSelectElement) {
++          if (![...node.options].some((option) => option.value === command.value && !option.disabled)) throw new Error("\u9009\u9879\u4E0D\u5B58\u5728\u6216\u4E0D\u53EF\u7528");
++          Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(node, command.value);
++          node.dispatchEvent(new Event("input", { bubbles: true }));
++          node.dispatchEvent(new Event("change", { bubbles: true }));
++        } else throw new Error("\u4E0D\u652F\u6301\u6B64\u63A7\u4EF6\u64CD\u4F5C");
++      }
++      await delay(250);
++      return snapshot();
++    }
++    let busy = false;
++    window.addEventListener("message", async (event) => {
++      const data = event.data;
++      if (event.source !== window.parent || !allowedParents.has(event.origin) || ![requestType, "dsh:studio:controlCancel"].includes(data?.type) || typeof data.id !== "string" || !/^[a-f0-9-]{36}$/.test(data.id)) return;
++      if (data.type === "dsh:studio:controlCancel") {
++        if (cancelled.size >= 128) cancelled.delete(cancelled.values().next().value);
++        cancelled.add(data.id);
++        const frame = document.querySelector("iframe[data-studio-app]");
++        if (frame && isLocal(new URL(frame.src))) frame.contentWindow?.postMessage(data, new URL(frame.src).origin);
++        return;
++      }
++      const reply = (body) => window.parent.postMessage({ type: resultType, id: data.id, ...body }, event.origin);
++      if (data.action === "ping") {
++        reply({ ready: true });
++        return;
++      }
++      if (seen.has(data.id)) {
++        reply({ error: "\u64CD\u4F5C\u5DF2\u63A5\u6536\uFF0C\u8BF7\u91CD\u65B0\u8BFB\u53D6\u9875\u9762\uFF0C\u4E0D\u8981\u91CD\u590D\u63D0\u4EA4" });
++        return;
++      }
++      if (busy) {
++        reply({ error: "\u9875\u9762\u6B63\u5728\u6267\u884C\u53E6\u4E00\u4E2A\u64CD\u4F5C" });
++        return;
++      }
++      if (cancelled.has(data.id) || !Number.isFinite(data.expiresAt) || data.expiresAt < Date.now()) {
++        reply({ error: "\u64CD\u4F5C\u5DF2\u53D6\u6D88\u6216\u8FC7\u671F" });
++        return;
++      }
++      if (seen.size >= 128) seen.delete(seen.values().next().value);
++      seen.add(data.id);
++      busy = true;
++      try {
++        const deadline = Math.min(data.expiresAt - 1e3, Date.now() + 1e4);
++        const loading = () => document.readyState === "loading" || document.querySelector('[data-studio-loading="true"]') || [...document.querySelectorAll("#root,#app")].some((root) => !root.children.length);
++        while (loading() && Date.now() < deadline && !cancelled.has(data.id)) await delay(100);
++        if (cancelled.has(data.id) || data.expiresAt < Date.now()) throw new Error("\u64CD\u4F5C\u5DF2\u53D6\u6D88\u6216\u8FC7\u671F");
++        if (loading()) throw new Error("\u9875\u9762\u4ECD\u5728\u52A0\u8F7D\uFF0C\u8BF7\u7A0D\u540E\u91CD\u65B0 read");
++        const child = document.querySelector("iframe[data-studio-app]");
++        if (child) {
++          const origin = new URL(child.src, location.href).origin;
++          if (!isLocal(new URL(origin))) throw new Error("\u5DE5\u4F5C\u5BA4\u63A7\u5236\u4EC5\u652F\u6301\u672C\u673A\u5E94\u7528");
++          const forwarded = await new Promise((resolve, reject) => {
++            let sent = false;
++            const finish = (error, result) => {
++              clearInterval(probe);
++              clearTimeout(timer);
++              window.removeEventListener("message", receive);
++              error ? reject(error) : resolve(result);
++            };
++            const receive = (message) => {
++              if (message.source !== child.contentWindow || message.origin !== origin || message.data?.type !== resultType || message.data.id !== data.id) return;
++              if (message.data.ready && !sent) {
++                if (cancelled.has(data.id) || data.expiresAt < Date.now()) {
++                  finish(new Error("\u64CD\u4F5C\u5DF2\u53D6\u6D88\u6216\u8FC7\u671F"));
++                  return;
++                }
++                sent = true;
++                clearInterval(probe);
++                child.contentWindow?.postMessage(data, origin);
++              } else if (sent && !message.data.ready) finish(void 0, message.data);
++            };
++            window.addEventListener("message", receive);
++            const ping = () => child.contentWindow?.postMessage({ ...data, action: "ping" }, origin);
++            const probe = setInterval(ping, 150);
++            const timer = setTimeout(() => finish(new Error(sent ? "\u5E94\u7528\u54CD\u5E94\u8D85\u65F6\uFF0C\u8BF7\u91CD\u65B0\u8BFB\u53D6\u9875\u9762\u786E\u8BA4\u7ED3\u679C" : "\u5E94\u7528\u5C1A\u672A\u5C31\u7EEA\u6216\u672A\u5B89\u88C5\u63A7\u5236\u6865")), Math.max(1, Math.min(18e3, data.expiresAt - Date.now())));
++            ping();
++          });
++          window.parent.postMessage(forwarded, event.origin);
++        } else reply({ result: await perform(data) });
++      } catch (error) {
++        reply({ error: error instanceof Error ? error.message : "\u5DE5\u4F5C\u5BA4\u64CD\u4F5C\u5931\u8D25" });
++      } finally {
++        busy = false;
++      }
++    });
++  })();
++})();

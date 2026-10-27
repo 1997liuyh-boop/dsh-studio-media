@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "media",
+  "name": "AI短剧工作台",
+  "icon": "✍️",
+  "description": "Toonflow 原应用：无限画布、剧本分镜、角色素材与图片视频生成",
+  "order": 12,
+  "entry": "/studio-projects/media",
+  "capabilities": [
+    "dsh-session",
+    "dsh-models"
+  ],
+  "compatibility": {
+    "host": "0.2.1-rc.2",
+    "runtime": "^0.5.0",
+    "worktable": "^0.6.0"
+  }
+}

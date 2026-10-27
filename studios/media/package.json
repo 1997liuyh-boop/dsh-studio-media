@@ -1,0 +1,73 @@
+{
+  "name": "dsh-studio-media",
+  "version": "0.2.0",
+  "description": "Toonflow 原应用：无限画布、剧本分镜、角色素材与图片视频生成",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "dsh.plugin.json",
+    "README.md",
+    "LICENSE",
+    "static",
+    "upstream",
+    "patches",
+    "app",
+    "studio.json",
+    "sources.json",
+    "UPSTREAM.json",
+    "THIRD_PARTY_NOTICES.md",
+    "UPSTREAM-LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    },
+    "compatibility": {
+      "dsh": "0.2.1-rc.2",
+      "dshReleases": {
+        "0.2.1-rc.2": "experimental"
+      }
+    }
+  },
+  "peerDependencies": {
+    "dsh-studio-projects": "^0.5.0",
+    "dsh-worktable": "^0.6.0"
+  },
+  "peerDependenciesMeta": {
+    "dsh-studio-projects": {
+      "optional": true
+    },
+    "dsh-worktable": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/build.mjs media"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/1997liuyh-boop/dsh-studio-media.git",
+    "directory": "studios/media"
+  },
+  "homepage": "https://github.com/1997liuyh-boop/dsh-studio-media#readme",
+  "bugs": {
+    "url": "https://github.com/1997liuyh-boop/dsh-studio-media/issues"
+  }
+}
