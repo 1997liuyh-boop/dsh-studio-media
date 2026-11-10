@@ -1,26 +1,38 @@
-# AI短剧工作台
+# dsh-studio-media
 
-独立的 Toonflow 适配工作室，把原应用的画布、剧本和素材流程接入 DSH。工作室容器、共享运行时和 Toonflow 外部服务分别管理，安装本插件不会自动安装原应用或数据库。
+[简体中文](README.zh.md)
 
-## 功能
+## Repository
 
-- 无限画布：查看和组织剧本、分镜、角色与场景素材。
-- 剧本流程：维护故事、分场、镜头和制作备注，并在 DSH 会话中继续讨论。
-- 角色与素材：管理角色设定、参考图片、场景资产和可复用素材。
-- 图片与视频生成入口：从工作室调用已配置的原应用能力，显示实际任务状态和失败原因。
-- 会话桥接：在工作室页面使用绑定的 DSH 会话，保持消息、流式回复、工具结果、模型和停止状态一致。
-- 服务状态：原应用服务未启动时显示连接提示和重试入口，不用示例数据伪装为已连接。
+- Repository name: `dsh-studio-media`
+- Repository description: Toonflow studio adapter for an infinite canvas, scripts, storyboards, character assets and image/video generation tasks.
+- Source: `https://github.com/1997liuyh-boop/dsh-studio-media`
+- Upstream: `https://github.com/HBAI-Ltd/Toonflow-app`, locked in `UPSTREAM.json`.
 
-## 安装与服务
+## Features
 
-先安装 [工作室容器与共享运行时](https://github.com/1997liuyh-boop/dsh-studio-library)，再通过 dsh 插件管理器添加本仓库。启动原应用服务并配置服务地址、数据库和生成服务后，工作室列表才会显示可用页面。
+- Organize scripts, storyboards, characters, scenes and reusable assets on an infinite canvas.
+- Keep story, scene, shot and production notes in the original application's workflow.
+- Invoke configured image and video generation tasks and show real progress or failure details.
+- Bridge a bound DSH session with messages, streaming replies, model state, tool results and stop status.
+- Show service status and retry controls when Toonflow or its database is unavailable; no sample data is used as a connection signal.
 
-需要 Node.js 22 及 npm。运行 `npm install --include=dev --legacy-peer-deps`、`npm run build`、`npm run check`。本仓库保留原应用源码、适配补丁和已构建静态资源。
+## Installation
 
-## 数据与限制
+Install the control bundle, then this exact studio tag through the official Desktop plugin manager after fully quitting Desktop:
 
-项目和会话状态保存在当前工作室项目目录；原应用服务仍负责其数据库和生成任务。服务、模型、存储和第三方生成额度由用户自行配置；本插件不包含个人数据、账号凭据或外部服务。来源、锁定提交和第三方许可见 `UPSTREAM.json` 与 `THIRD_PARTY_NOTICES.md`。
+```powershell
+& "<Desktop install directory>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "github:1997liuyh-boop/dsh-studio-library#v0.1.3"
+& "<Desktop install directory>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "github:1997liuyh-boop/dsh-studio-media#v0.2.2"
+& "<Desktop install directory>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop list
+```
 
-## 更新已安装插件
+Verify `main: lib/index.js`, `exports./client: lib/client.js`, `dsh.bundle.patch: ./cordis.patch.yml` and the built `static` entry. Configure the Toonflow service, database, model provider and storage separately, then restart Desktop.
 
-GitHub 代码提交不会自动更新 Desktop profile 中已经锁定的安装版本。请通过插件管理器重新安装本仓库来源；旧共享组合库的用户请先按[控制层迁移步骤](https://github.com/1997liuyh-boop/dsh-studio-library#更新与旧组合库迁移)保留现有子工作室，再移除旧组合库。工作室内升级需要已发布的适配安装包。
+## Requirements and limits
+
+The adapter does not include personal data, accounts, generation quotas or external services. Toonflow remains responsible for its database and generation tasks. Source and third-party notices are in `UPSTREAM.json` and `THIRD_PARTY_NOTICES.md`.
+
+## License and sources
+
+MIT licensed. The upstream revision and adaptation patches are recorded in `UPSTREAM.json` and `patches/`.
