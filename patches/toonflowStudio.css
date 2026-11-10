@@ -1,0 +1,6 @@
+@layer theme, utilities;
+@import "tailwindcss/theme.css" layer(theme) prefix(tf);
+@import "tailwindcss/utilities.css" layer(utilities) prefix(tf);
+@source inline("tf:absolute tf:right-6 tf:top-4 tf:z-20 tf:flex tf:items-center tf:gap-2 tf:rounded-lg tf:bg-(--el-bg-color) tf:p-2 tf:text-sm tf:shadow tf:max-w-48 tf:truncate");
+@source inline("tf:h-full tf:min-h-0 tf:min-w-0 tf:w-full tf:flex-1 tf:shrink-0 tf:flex-col tf:overflow-hidden tf:pb-2 tf:border-b tf:border-(--el-border-color-light) tf:px-3 tf:py-2 tf:text-xs tf:text-(--el-text-color-secondary)");
+@source inline("tf:relative tf:min-w-0 tf:flex-1 tf:text-xs tf:cursor-pointer tf:list-none tf:truncate tf:py-1 tf:absolute tf:bottom-full tf:left-0 tf:z-50 tf:mb-2 tf:flex tf:w-72 tf:max-w-[75vw] tf:flex-col tf:gap-3 tf:rounded-lg tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color-overlay) tf:p-3 tf:shadow-lg tf:gap-1 tf:rounded tf:bg-(--el-bg-color) tf:p-2 tf:text-inherit tf:w-full tf:m-0 tf:text-(--el-text-color-secondary) tf:text-(--el-color-danger) tf:border-0 tf:bg-(--el-fill-color)");

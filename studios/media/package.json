@@ -5,7 +5,8 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=22"
+    "node": ">=22",
+    "dsh": "0.2.1-rc.2 || >=0.2.2-rc.1 <0.2.2"
   },
   "main": "lib/index.js",
   "exports": {
@@ -27,7 +28,8 @@
     "sources.json",
     "UPSTREAM.json",
     "THIRD_PARTY_NOTICES.md",
-    "UPSTREAM-LICENSE"
+    "UPSTREAM-LICENSE",
+    "scripts/start.ps1"
   ],
   "dsh": {
     "bundle": {
@@ -59,7 +61,8 @@
     }
   },
   "scripts": {
-    "build": "node ../../scripts/build.mjs media"
+    "build": "node scripts/build.mjs",
+    "check": "node scripts/check-install.mjs"
   },
   "repository": {
     "type": "git",
@@ -69,5 +72,19 @@
   "homepage": "https://github.com/1997liuyh-boop/dsh-studio-media#readme",
   "bugs": {
     "url": "https://github.com/1997liuyh-boop/dsh-studio-media/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "studio"
+  ],
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.0",
+    "esbuild": "^0.28.2",
+    "postcss": "8.5.15",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "tailwindcss": "4.3.0",
+    "typescript": "6.0.3"
   }
 }
