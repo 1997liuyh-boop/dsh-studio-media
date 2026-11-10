@@ -29,6 +29,16 @@ Install the control bundle, then this exact studio tag through the official Desk
 
 Verify `main: lib/index.js`, `exports./client: lib/client.js`, `dsh.bundle.patch: ./cordis.patch.yml` and the built `static` entry. Configure the Toonflow service, database, model provider and storage separately, then restart Desktop.
 
+### Service setup
+
+The plugin does not ship the Toonflow service. Prepare the pinned upstream source in a new absolute directory, then follow its own documentation to install dependencies and start the service:
+
+```powershell
+node scripts/prepare-upstream.mjs media "C:\work\toonflow"
+```
+
+Configure the DSH host with `toonflowUrl`, or set `DSH_STUDIO_TOONFLOW_URL` to the service origin. The default origin is `http://127.0.0.1:33101`; the upstream service, database, model provider and storage must be running before opening the studio.
+
 ## Requirements and limits
 
 The adapter does not include personal data, accounts, generation quotas or external services. Toonflow remains responsible for its database and generation tasks. Source and third-party notices are in `UPSTREAM.json` and `THIRD_PARTY_NOTICES.md`.

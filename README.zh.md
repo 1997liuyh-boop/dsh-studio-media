@@ -29,6 +29,16 @@
 
 验证安装包包含 `main: lib/index.js`、`exports./client: lib/client.js`、`dsh.bundle.patch: ./cordis.patch.yml` 和已构建的 `static` 入口。另行配置 Toonflow 服务、数据库、模型提供方和存储，随后重启 Desktop。
 
+### 服务配置
+
+插件不包含 Toonflow 服务。请先在新的绝对目录准备固定版本的上游源码，再按上游项目文档安装依赖并启动服务：
+
+```powershell
+node scripts/prepare-upstream.mjs media "C:\work\toonflow"
+```
+
+在 DSH 宿主配置 `toonflowUrl`，或设置 `DSH_STUDIO_TOONFLOW_URL` 为服务来源地址。默认地址为 `http://127.0.0.1:33101`；打开工作室前必须启动上游服务、数据库、模型提供方和存储。
+
 ## 要求与限制
 
 适配包不包含个人数据、账号、生成额度或外部服务。Toonflow 仍负责数据库和生成任务。源码和第三方声明见 `UPSTREAM.json` 与 `THIRD_PARTY_NOTICES.md`。

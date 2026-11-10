@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 interface Status { id: string; title: string; url: string; entryUrl: string; source: string; ready: boolean; startupError?: string }
 const id = location.pathname.split('/').filter(Boolean)[1]
 const title = id === 'media' ? 'AI短剧工作台' : 'AI剧工作台'
+const helpCommand = 'node scripts/prepare-upstream.mjs media <绝对目录>'
+const helpText = '在独立目录准备固定的 Toonflow 上游源码后，按上游项目说明安装依赖并启动服务；工作室地址可通过 toonflowUrl 或 DSH_STUDIO_TOONFLOW_URL 配置。'
 const button = 'rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800'
 
 /** 直接嵌入原应用，服务不可用时显示明确状态并提供重新连接入口。 */
@@ -61,7 +63,7 @@ function LaunchApp() {
         <h1 className="text-xl font-semibold">{loading ? '正在打开' + title : '工作台暂未连接'}</h1>
         <p className="mt-3 break-words text-sm leading-7 text-slate-500">请确认本机工作室服务已经启动，再重新连接。{(error || status?.startupError) && <span className="mt-1 block text-xs">{error || status?.startupError}</span>}</p>
         <button className={button + ' mt-4'} disabled={loading} onClick={() => { void refresh() }}>重新连接</button>
-        <details className="mt-5 text-sm"><summary className="font-medium">启动帮助</summary><code className="mt-3 block overflow-auto rounded-lg bg-slate-100 p-3 dark:bg-slate-950">pnpm run studio:apps</code><p className="mt-3 text-xs leading-6 text-slate-500">在 Harness 项目目录运行。AI 生成需要配置有效模型。</p></details>
+        <details className="mt-5 text-sm"><summary className="font-medium">启动帮助</summary><code className="mt-3 block overflow-auto rounded-lg bg-slate-100 p-3 dark:bg-slate-950">{helpCommand}</code><p className="mt-3 text-xs leading-6 text-slate-500">{helpText}</p></details>
       </section></main>}
   </div>
 }
