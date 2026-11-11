@@ -1,6 +1,6 @@
 {
   "name": "dsh-studio-media",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Toonflow 原应用：无限画布、剧本分镜、角色素材与图片视频生成",
   "type": "module",
   "license": "MIT",

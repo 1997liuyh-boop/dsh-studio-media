@@ -23,7 +23,7 @@ Install the control bundle, then this exact studio tag through the official Desk
 
 ```powershell
 & "<Desktop install directory>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "github:1997liuyh-boop/dsh-studio-library#v0.1.3"
-& "<Desktop install directory>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "github:1997liuyh-boop/dsh-studio-media#v0.2.3"
+& "<Desktop install directory>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "github:1997liuyh-boop/dsh-studio-media#v0.2.4"
 & "<Desktop install directory>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop list
 ```
 
