@@ -1,0 +1,1 @@
+import{On as e,b as t,k as n,mt as r,rr as i,y as a}from"./runtime-core.esm-bundler-BQN2Yjms.js";import{h as o}from"./messageMarkdown-BRSB-TUe.js";var s={key:0,"data-stream-markdown":`caret`},c=n({__name:`caret`,setup(n){let{enableCaret:c,caret:l}=o();return(n,o)=>e(c)?(r(),t(`span`,s,i(e(l)),1)):a(`v-if`,!0)}});export{c as default};

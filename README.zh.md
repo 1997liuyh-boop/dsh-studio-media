@@ -23,21 +23,32 @@
 
 ```powershell
 & "<Desktop安装目录>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "github:1997liuyh-boop/dsh-studio-library#v0.1.3"
-& "<Desktop安装目录>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "github:1997liuyh-boop/dsh-studio-media#v0.2.5"
+& "<Desktop安装目录>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "github:1997liuyh-boop/dsh-studio-media#v0.3.0"
 & "<Desktop安装目录>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop list
 ```
 
-验证安装包包含 `main: lib/index.js`、`exports./client: lib/client.js`、`dsh.bundle.patch: ./cordis.patch.yml` 和已构建的 `static` 入口。另行配置 Toonflow 服务、数据库、模型提供方和存储，随后重启 Desktop。
+验证安装包包含 `main: lib/index.js`、`exports./client: lib/client.js`、`dsh.bundle.patch: ./cordis.patch.yml`、已构建的 `static` 入口和 `app/build`（Toonflow 服务与页面）。安装后重启 Desktop，服务会自动启动；模型提供方与存储在工作室内的设置里配置。
 
 ### 服务配置
 
-插件不包含 Toonflow 服务。请先在新的绝对目录准备固定版本的上游源码，再按上游项目文档安装依赖并启动服务：
+Toonflow 服务随本工作室一起安装，不需要另外准备源码，也不需要启动脚本：
+
+- **自动启动**：工作室安装或启用后，工作室库运行时（`dsh-studio-library` 0.1.20 及以上）把 `app` 复制到独立的运行副本，用 Bun 启动服务；更新工作室后自动切换到新版本。控制台的工作室列表显示连接状态，未连接时可点「启动」，失败原因直接显示在该行。
+- **Bun**：各平台的 Bun 1.4.3 声明为本包的可选依赖，安装工作室时包管理器只装当前平台的那一个。安装被跳过时，可设置环境变量 `DSH_STUDIO_BUN`，或在 `dsh-studio-projects` 插件配置里填 `bunPath`（Bun 程序的绝对路径）。
+- **数据目录**：数据库、素材和工作区默认在 `<DSH_HOME>/studio/toonflow`（`DSH_HOME` 缺省为 `~/.dsh`）。已有数据在别处时，在 `dsh-studio-projects` 插件配置里填 `toonflowDataDirectory`，或设置环境变量 `DSH_STUDIO_TOONFLOW_DATA`。运行副本与日志在 `<DSH_HOME>/studio/media`，与数据分开。
+- **端口**：默认 `http://127.0.0.1:33101`，可用 `toonflowUrl` 或 `DSH_STUDIO_TOONFLOW_URL` 改端口。地址不是本机回环地址时（服务部署在别的机器上），运行时不再自动启动，只按该地址连接。
+- **已有服务**：端口上已经有 Toonflow 在运行（例如自行从源码启动的）时直接沿用，不会停掉它。设置 `DSH_STUDIO_SKIP_APPS=1` 可关闭自动启动。
+
+随包的构建产物对应 `UPSTREAM.json` 记录的上游提交加 `patches/`。需要自行构建时：
 
 ```powershell
 node scripts/prepare-upstream.mjs media "C:\work\toonflow"
+cd C:\work\toonflow
+bun install
+bun run build
 ```
 
-在 DSH 宿主配置 `toonflowUrl`，或设置 `DSH_STUDIO_TOONFLOW_URL` 为服务来源地址。默认地址为 `http://127.0.0.1:33101`；打开工作室前必须启动上游服务、数据库、模型提供方和存储。
+旧版工作室库（0.1.19 及以下）不会自动启动服务，仍需像以前一样自行启动 Toonflow。
 
 ## 要求与限制
 

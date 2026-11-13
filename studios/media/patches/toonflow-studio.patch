@@ -1,8 +1,60 @@
+diff --git a/app.config.ts b/app.config.ts
+new file mode 100644
+index 0000000..93f798f
+--- /dev/null
++++ b/app.config.ts
+@@ -0,0 +1,7 @@
++/** Web 与桌面共用的应用信息；不加载桌面 SDK。 */
++export const appConfig = {
++    name: "toonflow",
++    identifier: "local.toonflow.desktop",
++    version: process.env.appVersion ?? "2.0.0",
++    urlSchemes: ["toonflow"],
++  };
+diff --git a/apps/server/scripts/build.ts b/apps/server/scripts/build.ts
+index e5cc539..d47f620 100644
+--- a/apps/server/scripts/build.ts
++++ b/apps/server/scripts/build.ts
+@@ -1,7 +1,7 @@
+ import { $ } from "bun";
+ import { cp, mkdir, realpath, rm } from "@toonflow/file";
+ import { dirname, resolve } from "node:path";
+-import config from "../../../electrobun.config";
++import { appConfig } from "../../../app.config";
+ import copyDocumentPackages from "./copyDocumentPackages";
+ import copySandboxPackages from "./copySandboxPackages";
+ 
+@@ -16,7 +16,7 @@ await mkdir(outputDirectory, { recursive: true });
+ // ACT: 移除旧版构建遗留的宿主 SDK，避免增量构建继续把它带入发布目录。
+ await rm(resolve(outputDirectory, "pluginSdk"), { recursive: true, force: true });
+ // ACT: Photon、anydoc 与沙盒依赖保留运行时目录，WASM/Worker 不依赖源码目录或启动位置。
+-await $`${process.execPath} build src/index.ts --target=bun --minify --external @silvia-odwyer/photon-node --external @firecrawl/anydoc --external @firecrawl/anydoc-wasm --external just-bash --define ${`process.env.appVersion:${JSON.stringify(config.app.version)}`} --outdir ${outputDirectory}`.cwd(resolve(projectDir, "apps/server"));
++await $`${process.execPath} build src/index.ts --target=bun --minify --external @silvia-odwyer/photon-node --external @firecrawl/anydoc --external @firecrawl/anydoc-wasm --external just-bash --define ${`process.env.appVersion:${JSON.stringify(appConfig.version)}`} --outdir ${outputDirectory}`.cwd(resolve(projectDir, "apps/server"));
+ await $`${process.execPath} build packages/ffmpeg/src/ffmpegWorker.ts --target=bun --minify --outdir ${outputDirectory}`.cwd(projectDir);
+ await $`${process.execPath} build packages/tools/sandbox/src/sandboxProcess.ts --target=bun --minify --external just-bash --outdir ${outputDirectory}`.cwd(projectDir);
+ const photonOutput = resolve(projectDir, "build/server/node_modules/@silvia-odwyer/photon-node");
 diff --git a/apps/server/src/index.ts b/apps/server/src/index.ts
-index 015882d..7887dde 100644
+index 6440393..986ad6a 100644
 --- a/apps/server/src/index.ts
 +++ b/apps/server/src/index.ts
-@@ -21,9 +21,15 @@ const app = await createApp({
+@@ -1,6 +1,6 @@
+ import { resolve } from "node:path";
+ import { createApp } from "./app";
+-import config from "../../../electrobun.config";
++import { appConfig } from "../../../app.config";
+ 
+ const startTime = Date.now();
+ const realPort = Number(process.env.TOONFLOW_SERVER_PORT || 3000);
+@@ -11,7 +11,7 @@ const appDirectory = resolve(import.meta.dirname, fromSource ? "../../.." : "../
+ const dataDirectory = process.env.TOONFLOW_DATA_DIR ?? resolve(appDirectory, "data");
+ const app = await createApp({
+   webRoot: resolve(appDirectory, "build/web"),
+-  appVersion: config.app.version,
++  appVersion: appConfig.version,
+   dataDirectory,
+   toolsRoot: resolve(appDirectory, "build/tools"),
+   nodesRoot: resolve(appDirectory, "build/nodes"),
+@@ -21,11 +21,17 @@ const app = await createApp({
    providersRoot: resolve(appDirectory, fromSource ? "packages/providers/src" : "build/providers"),
    skillsRoot: resolve(appDirectory, fromSource ? "packages/skills" : "build/skills"),
  });
@@ -14,38 +66,238 @@ index 015882d..7887dde 100644
 +}
  const { initializeMcpRuntime } = await import("./utils/mcp/runtime");
  const { startMobileLinkRuntime } = await import("./utils/mobileLink");
+ const { startMultiTenantRuntime } = await import("./utils/multiTenant");
+ await startMultiTenantRuntime(app);
 -app.listen(realPort, async (error?: Error) => {
 +app.listen(realPort, process.env.TOONFLOW_SERVER_HOST ?? "127.0.0.1", async (error?: Error) => {
    if (error) throw error;
    await initializeMcpRuntime(app, `http://127.0.0.1:${realPort}`, resolve(appDirectory, fromSource ? "packages/mcp/src/stdio.ts" : "build/mcp/stdio.js"));
    await startMobileLinkRuntime(app).catch(error => console.error("设备互联启动失败：", error));
-diff --git a/apps/server/src/routes/agent.ts b/apps/server/src/routes/agent.ts
-index 4e9ee3c..7dfc5a5 100644
---- a/apps/server/src/routes/agent.ts
-+++ b/apps/server/src/routes/agent.ts
-@@ -17,7 +17,8 @@ const inputSchema = z.object({
-   sessionFile: z.string().regex(/^[\w-]+\.jsonl$/).optional(),
-   resendFrom: z.string().min(1).max(128).optional(),
-   canvas: z.strictObject({
--    id: z.string().min(1).max(256),
-+    // 未选画布时仍需提供新建、切换画布等工作区操作，空 ID 表示尚未选择。
-+    id: z.string().max(256),
-     tools: z.array(z.strictObject({
-       nodeId: z.string().min(1).max(256),
-       name: z.string().max(101).regex(/^node:[a-z][a-zA-Z0-9]*$/),
+diff --git a/apps/web/index.html b/apps/web/index.html
+index 55e1905..dc21f05 100644
+--- a/apps/web/index.html
++++ b/apps/web/index.html
+@@ -7,6 +7,7 @@
+   </head>
+   <body>
+     <div id="app"></div>
++    <script src="/studioControl.js"></script>
+     <script type="module" src="/src/main.ts"></script>
+   </body>
+ </html>
+diff --git a/apps/web/public/studioControl.js b/apps/web/public/studioControl.js
+new file mode 100644
+index 0000000..3fcbf65
+--- /dev/null
++++ b/apps/web/public/studioControl.js
+@@ -0,0 +1,194 @@
++"use strict";
++(() => {
++  // D:/demo2/studio-library/packages/sdk/controlBridge.ts
++  (() => {
++    if (window.parent === window || window.__dshStudioControl) return;
++    window.__dshStudioControl = true;
++    const requestType = "dsh:studio:control";
++    const resultType = "dsh:studio:controlResult";
++    const controls = /* @__PURE__ */ new Map();
++    const seen = /* @__PURE__ */ new Set();
++    const cancelled = /* @__PURE__ */ new Set();
++    const allowedParents = /* @__PURE__ */ new Set([location.origin, "dsh-app://app"]);
++    const isLocal = (url) => ["http:", "https:"].includes(url.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
++    try {
++      const parent = new URL(document.referrer);
++      if (isLocal(parent) && parent.port === "5173") allowedParents.add(parent.origin);
++    } catch {
++    }
++    const redact = (value) => value.replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[\u51ED\u636E\u5DF2\u9690\u85CF]").replace(/\b(?:sk-[\w-]+|[a-f0-9]{24,})\b/gi, "[\u51ED\u636E\u5DF2\u9690\u85CF]").slice(0, 12e3);
++    const visible = (node) => {
++      if (node.closest('[hidden],[inert],[aria-hidden="true"]')) return false;
++      if (getComputedStyle(node).pointerEvents === "none") return false;
++      for (let item = node; item; item = item.parentElement) {
++        const style = getComputedStyle(item);
++        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
++      }
++      return node.getClientRects().length > 0;
++    };
++    const label = (node) => {
++      const labelled = node.getAttribute("aria-labelledby")?.split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
++      const field = node;
++      return (node.getAttribute("aria-label") || labelled || field.labels?.[0]?.textContent || node.getAttribute("placeholder") || node.getAttribute("title") || node.innerText || node.textContent || field.name || "").trim().replace(/\s+/g, " ").slice(0, 180);
++    };
++    const sensitive = (node) => node.matches('input[type="password"],input[type="file"]') || /密码|密钥|令牌|secret|token|api.?key|password/i.test(label(node) + " " + node.name + " " + node.id);
++    let generation = 0;
++    const pageId = crypto.randomUUID().slice(0, 8);
++    function snapshot(offset = 0) {
++      controls.clear();
++      generation += 1;
++      const nodes = [...document.querySelectorAll('button,a[href],input:not([type="hidden"]),textarea,select,summary,[role="button"],[role="tab"],[role="checkbox"],[contenteditable="true"],[tabindex]')].filter(visible);
++      const entries = nodes.slice(offset, offset + 100).map((node, index) => {
++        const id = pageId + "-c" + generation + "-" + (offset + index);
++        controls.set(id, node);
++        const input = node;
++        const secret = sensitive(node);
++        return {
++          id,
++          tag: node.tagName.toLowerCase(),
++          label: redact(label(node)),
++          type: input.type || node.getAttribute("role") || void 0,
++          disabled: node.matches(':disabled,[aria-disabled="true"]'),
++          sensitive: secret || void 0,
++          value: !secret && node.matches("input,textarea,select") ? redact(input.value) : void 0,
++          checked: node.matches('input[type="checkbox"],input[type="radio"]') ? input.checked : void 0,
++          selected: node.getAttribute("aria-pressed") ?? node.getAttribute("aria-selected") ?? (node.classList.contains("is-active") ? "true" : void 0),
++          options: node instanceof HTMLSelectElement ? [...node.options].slice(0, 80).map((option) => ({ value: option.value, label: redact(option.text), disabled: option.disabled })) : void 0
++        };
++      });
++      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
++      const text = [];
++      let length = 0;
++      while (walker.nextNode() && length < 12e3) {
++        const parent = walker.currentNode.parentElement;
++        if (!parent || parent.closest("script,style,noscript,input,textarea,[data-sensitive]") || !visible(parent)) continue;
++        const value = walker.currentNode.textContent?.trim();
++        if (value) {
++          text.push(value);
++          length += value.length;
++        }
++      }
++      const result = { title: document.title, path: location.pathname, text: redact(text.join("\n")), controls: entries, totalControls: nodes.length, nextOffset: offset + entries.length < nodes.length ? offset + entries.length : null };
++      while (JSON.stringify(result).length > 48e3 && entries.length > 1) entries.pop();
++      result.nextOffset = offset + entries.length < nodes.length ? offset + entries.length : null;
++      return result;
++    }
++    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
++    async function perform(command) {
++      if (command.action === "open" || command.action === "read") return snapshot(command.offset ?? 0);
++      const node = command.target ? controls.get(command.target) : void 0;
++      if (command.target && (!node?.isConnected || !visible(node))) throw new Error("\u9875\u9762\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0 read \u83B7\u53D6\u63A7\u4EF6");
++      if (node?.matches(':disabled,[aria-disabled="true"]')) throw new Error("\u63A7\u4EF6\u5F53\u524D\u4E0D\u53EF\u7528");
++      if (node && sensitive(node)) throw new Error("\u654F\u611F\u8BBE\u7F6E\u8BF7\u7531\u7528\u6237\u5728\u9875\u9762\u4E2D\u64CD\u4F5C");
++      if (command.action === "scroll") {
++        const horizontal = ["left", "right"].includes(command.direction);
++        let container = node ?? document.elementFromPoint(innerWidth / 2, innerHeight / 2);
++        while (container && !(horizontal ? container.scrollWidth > container.clientWidth : container.scrollHeight > container.clientHeight)) container = container.parentElement;
++        container ??= document.scrollingElement;
++        const amount = ["up", "left"].includes(command.direction) ? -480 : 480;
++        container.scrollBy({ [horizontal ? "left" : "top"]: amount, behavior: "instant" });
++      } else {
++        if (!node) throw new Error("\u8BF7\u63D0\u4F9B\u6700\u8FD1 read \u8FD4\u56DE\u7684\u63A7\u4EF6 id");
++        node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
++        node.focus({ preventScroll: true });
++        if (command.action === "click") {
++          if (node instanceof HTMLAnchorElement && !["http:", "https:", "dsh-app:"].includes(new URL(node.href).protocol)) throw new Error("\u4E0D\u652F\u6301\u6B64\u94FE\u63A5\u7C7B\u578B");
++          node.click();
++        } else if (command.action === "fill") {
++          if (typeof command.value !== "string" || command.value.length > 8e3) throw new Error("\u8F93\u5165\u5185\u5BB9\u65E0\u6548");
++          if (node.matches('input:not([type="checkbox"]):not([type="radio"]),textarea') && !node.readOnly) {
++            const prototype = node instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
++            Object.getOwnPropertyDescriptor(prototype, "value").set.call(node, command.value);
++            node.dispatchEvent(new Event("input", { bubbles: true }));
++            node.dispatchEvent(new Event("change", { bubbles: true }));
++          } else if (node.isContentEditable) {
++            node.textContent = command.value;
++            node.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: command.value }));
++          } else throw new Error("\u8BE5\u63A7\u4EF6\u4E0D\u80FD\u586B\u5199\uFF0C\u8BF7\u4F7F\u7528 click \u6216 select");
++        } else if (command.action === "select" && node instanceof HTMLSelectElement) {
++          if (![...node.options].some((option) => option.value === command.value && !option.disabled)) throw new Error("\u9009\u9879\u4E0D\u5B58\u5728\u6216\u4E0D\u53EF\u7528");
++          Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(node, command.value);
++          node.dispatchEvent(new Event("input", { bubbles: true }));
++          node.dispatchEvent(new Event("change", { bubbles: true }));
++        } else throw new Error("\u4E0D\u652F\u6301\u6B64\u63A7\u4EF6\u64CD\u4F5C");
++      }
++      await delay(250);
++      return snapshot();
++    }
++    let busy = false;
++    window.addEventListener("message", async (event) => {
++      const data = event.data;
++      if (event.source !== window.parent || !allowedParents.has(event.origin) || ![requestType, "dsh:studio:controlCancel"].includes(data?.type) || typeof data.id !== "string" || !/^[a-f0-9-]{36}$/.test(data.id)) return;
++      if (data.type === "dsh:studio:controlCancel") {
++        if (cancelled.size >= 128) cancelled.delete(cancelled.values().next().value);
++        cancelled.add(data.id);
++        const frame = document.querySelector("iframe[data-studio-app]");
++        if (frame && isLocal(new URL(frame.src))) frame.contentWindow?.postMessage(data, new URL(frame.src).origin);
++        return;
++      }
++      const reply = (body) => window.parent.postMessage({ type: resultType, id: data.id, ...body }, event.origin);
++      if (data.action === "ping") {
++        reply({ ready: true });
++        return;
++      }
++      if (seen.has(data.id)) {
++        reply({ error: "\u64CD\u4F5C\u5DF2\u63A5\u6536\uFF0C\u8BF7\u91CD\u65B0\u8BFB\u53D6\u9875\u9762\uFF0C\u4E0D\u8981\u91CD\u590D\u63D0\u4EA4" });
++        return;
++      }
++      if (busy) {
++        reply({ error: "\u9875\u9762\u6B63\u5728\u6267\u884C\u53E6\u4E00\u4E2A\u64CD\u4F5C" });
++        return;
++      }
++      if (cancelled.has(data.id) || !Number.isFinite(data.expiresAt) || data.expiresAt < Date.now()) {
++        reply({ error: "\u64CD\u4F5C\u5DF2\u53D6\u6D88\u6216\u8FC7\u671F" });
++        return;
++      }
++      if (seen.size >= 128) seen.delete(seen.values().next().value);
++      seen.add(data.id);
++      busy = true;
++      try {
++        const deadline = Math.min(data.expiresAt - 1e3, Date.now() + 1e4);
++        const loading = () => document.readyState === "loading" || document.querySelector('[data-studio-loading="true"]') || [...document.querySelectorAll("#root,#app")].some((root) => !root.children.length);
++        while (loading() && Date.now() < deadline && !cancelled.has(data.id)) await delay(100);
++        if (cancelled.has(data.id) || data.expiresAt < Date.now()) throw new Error("\u64CD\u4F5C\u5DF2\u53D6\u6D88\u6216\u8FC7\u671F");
++        if (loading()) throw new Error("\u9875\u9762\u4ECD\u5728\u52A0\u8F7D\uFF0C\u8BF7\u7A0D\u540E\u91CD\u65B0 read");
++        const child = document.querySelector("iframe[data-studio-app]");
++        if (child) {
++          const origin = new URL(child.src, location.href).origin;
++          if (!isLocal(new URL(origin))) throw new Error("\u5DE5\u4F5C\u5BA4\u63A7\u5236\u4EC5\u652F\u6301\u672C\u673A\u5E94\u7528");
++          const forwarded = await new Promise((resolve, reject) => {
++            let sent = false;
++            const finish = (error, result) => {
++              clearInterval(probe);
++              clearTimeout(timer);
++              window.removeEventListener("message", receive);
++              error ? reject(error) : resolve(result);
++            };
++            const receive = (message) => {
++              if (message.source !== child.contentWindow || message.origin !== origin || message.data?.type !== resultType || message.data.id !== data.id) return;
++              if (message.data.ready && !sent) {
++                if (cancelled.has(data.id) || data.expiresAt < Date.now()) {
++                  finish(new Error("\u64CD\u4F5C\u5DF2\u53D6\u6D88\u6216\u8FC7\u671F"));
++                  return;
++                }
++                sent = true;
++                clearInterval(probe);
++                child.contentWindow?.postMessage(data, origin);
++              } else if (sent && !message.data.ready) finish(void 0, message.data);
++            };
++            window.addEventListener("message", receive);
++            const ping = () => child.contentWindow?.postMessage({ ...data, action: "ping" }, origin);
++            const probe = setInterval(ping, 150);
++            const timer = setTimeout(() => finish(new Error(sent ? "\u5E94\u7528\u54CD\u5E94\u8D85\u65F6\uFF0C\u8BF7\u91CD\u65B0\u8BFB\u53D6\u9875\u9762\u786E\u8BA4\u7ED3\u679C" : "\u5E94\u7528\u5C1A\u672A\u5C31\u7EEA\u6216\u672A\u5B89\u88C5\u63A7\u5236\u6865")), Math.max(1, Math.min(18e3, data.expiresAt - Date.now())));
++            ping();
++          });
++          window.parent.postMessage(forwarded, event.origin);
++        } else reply({ result: await perform(data) });
++      } catch (error) {
++        reply({ error: error instanceof Error ? error.message : "\u5DE5\u4F5C\u5BA4\u64CD\u4F5C\u5931\u8D25" });
++      } finally {
++        busy = false;
++      }
++    });
++  })();
++})();
 diff --git a/apps/web/src/components/agent/conversation.vue b/apps/web/src/components/agent/conversation.vue
-index 7333b8e..aa09dc5 100644
+index efb939c..acd84a6 100644
 --- a/apps/web/src/components/agent/conversation.vue
 +++ b/apps/web/src/components/agent/conversation.vue
-@@ -16,6 +16,7 @@
-       @copy="copyMessage"
+@@ -18,6 +18,7 @@
        @edit="input?.editMessage($event)"
+       @branch="!locked && !remoteRunning && emit('branch', $event)"
        @delete="deleteMessage"
 +      @discuss="discussMessage"
        @cancelEdit="input?.cancelEdit()" />
      <div v-if="compacting" class="compactionStatus" role="status">
        <el-icon class="is-loading" aria-hidden="true"><icon-loader-2 :size="14" /></el-icon>
-@@ -37,6 +38,7 @@
+@@ -55,6 +56,7 @@
        :contextUsage="contextUsage"
        :stats="stats"
        :contextWindow="contextWindow"
@@ -53,15 +305,15 @@ index 7333b8e..aa09dc5 100644
        @submit="submitMessage"
        @stop="stopMessage" />
    </div>
-@@ -50,6 +52,7 @@ import { IconLoader2 } from "@tabler/icons-vue";
- import { ElMessage } from "element-plus";
- import { getReadableFileExtension, getReadableFileMimeType } from "@toonflow/server/documentFormats";
+@@ -70,6 +72,7 @@ import { getReadableFileExtension, getReadableFileMimeType } from "@toonflow/ser
+ import { useNodeModelSelection } from "@toonflow/nodes-scaffold/nodeAi";
  import useWorkspaceFiles from "@/lib/workspaceFiles";
+ import { onAgentStopped, stopAgent } from "@/lib/agentControl";
 +import { shareStudioMessage } from "@/lib/studioDiscussion";
  import { writeClipboardText } from "@/lib/clipboard";
+ import { showNotification } from "@/lib/notification";
  import anonymousData from "@/lib/anonymousData";
- import { modelChoices } from "@/stores/settings";
-@@ -205,6 +208,24 @@ async function sendCanvasResult(event: Extract<AgentEvent, { type: "canvasCall"
+@@ -470,6 +473,24 @@ async function sendCanvasResult(event: Extract<AgentEvent, { type: "canvasCall"
    }
  }
  
@@ -87,29 +339,29 @@ index 7333b8e..aa09dc5 100644
    const instance = input.value;
    const draft = instance?.getDraft();
 diff --git a/apps/web/src/components/agent/conversation/messageInput.vue b/apps/web/src/components/agent/conversation/messageInput.vue
-index 4c8f3d0..b19523c 100644
+index 75a670f..0f25c6a 100644
 --- a/apps/web/src/components/agent/conversation/messageInput.vue
 +++ b/apps/web/src/components/agent/conversation/messageInput.vue
 @@ -38,13 +38,15 @@
      <teleport v-for="target in draftMentionTargets" :key="target.key" :to="target.element"><mentionThumbnail v-bind="mentionThumbnailProps(target.mention)" :directory="directory"><icon-photo :size="14" /></mentionThumbnail></teleport>
      <mentionContent ref="draftMentionPreview" :mentions="draftMentions" :directory="directory" removable @remove="removeDraftMention" />
      <div class="senderActions">
--      <modelPopover v-model="selectedModel" v-model:reasoningEffort="reasoningEffort" :active="active" :disabled="disabled || voiceActive" />
+-      <modelPopover v-model="selectedModel" v-model:reasoningEffort="reasoningEffort" :active="active" :disabled="disabled || running || submitting || voiceActive" />
 +      <slot v-if="sharedModelLabel !== undefined" name="modelSelector"><span class="tf:min-w-0 tf:flex-1 tf:truncate tf:text-xs tf:text-(--el-text-color-secondary)" :title="sharedModelLabel">{{ sharedModelLabel }}</span></slot>
-+      <modelPopover v-else v-model="selectedModel" v-model:reasoningEffort="reasoningEffort" :active="active" :disabled="disabled || voiceActive" />
-       <input ref="attachmentInput" type="file" :accept="attachmentAccept" multiple hidden :disabled="locked" @change="selectAttachments" />
-       <el-button text circle :disabled="locked" aria-label="添加附件" title="添加附件" @click="attachmentInput?.click()"><icon-paperclip :size="16" /></el-button>
-       <mentionMenu ref="mentionMenuRef" :directory="directory" :active="active" :disabled="locked || !directory" :query="mentionQuery" :editor="senderElement" :currentCanvasId="createCanvasContext?.()?.id" @open="captureMentionPosition" @select="insertMentions" @dismiss="mentionQuery = undefined" />
--      <skillMenu ref="skillMenuRef" :directory="directory" :active="active" :disabled="locked || !directory" :query="skillQuery" :editor="senderElement" @select="selectSkill" @dismiss="skillQuery = undefined" />
-+      <skillMenu v-if="sharedModelLabel === undefined" ref="skillMenuRef" :directory="directory" :active="active" :disabled="locked || !directory" :query="skillQuery" :editor="senderElement" @select="selectSkill" @dismiss="skillQuery = undefined" />
++      <modelPopover v-else v-model="selectedModel" v-model:reasoningEffort="reasoningEffort" :active="active" :disabled="disabled || running || submitting || voiceActive" />
+       <input ref="attachmentInput" type="file" :accept="attachmentAccept" multiple hidden :disabled="locked || running" @change="selectAttachments" />
+       <el-button text circle :disabled="locked || running" aria-label="添加附件" :title="running ? '生成期间仅支持发送文字' : '添加附件'" @click="attachmentInput?.click()"><icon-paperclip :size="16" /></el-button>
+       <mentionMenu ref="mentionMenuRef" :directory="directory" :active="active" :disabled="locked || running || !directory" :query="mentionQuery" :editor="senderElement" :currentCanvasId="createCanvasContext?.()?.id" @open="captureMentionPosition" @select="insertMentions" @dismiss="mentionQuery = undefined" />
+-      <skillMenu ref="skillMenuRef" :directory="directory" :active="active" :disabled="locked || running || !directory" :query="skillQuery" :editor="senderElement" @select="selectSkill" @dismiss="skillQuery = undefined" />
++      <skillMenu v-if="sharedModelLabel === undefined" ref="skillMenuRef" :directory="directory" :active="active" :disabled="locked || running || !directory" :query="skillQuery" :editor="senderElement" @select="selectSkill" @dismiss="skillQuery = undefined" />
        <el-button class="voiceButton" :class="{ voiceActive }" text circle :disabled="!voiceSupported || (!voiceActive && locked)" :aria-label="voiceButtonLabel" :aria-pressed="voiceActive" :title="voiceButtonLabel" @click="voiceActive ? cancelVoiceInput() : startVoiceInput()"><icon-microphone :size="18" /></el-button>
 -      <contextUsagePopover v-model:visible="contextMenuVisible" :usage="contextUsage" :stats="stats" :contextWindow="contextWindow" :disabled="voiceActive" />
-+      <el-button v-if="isStudioEmbedded && sharedModelLabel === undefined" text :disabled="locked" aria-label="交给 App 协作" title="将当前输入带入 App 聊天草稿" @click="emit('discuss')">App 协作</el-button>
++      <el-button v-if="isStudioEmbedded && sharedModelLabel === undefined" text :disabled="locked" aria-label="交给 App 协作" @click="emit('discuss')">App 协作</el-button>
 +      <contextUsagePopover v-if="sharedModelLabel === undefined" v-model:visible="contextMenuVisible" :usage="contextUsage" :stats="stats" :contextWindow="contextWindow" :disabled="voiceActive" />
-       <el-button class="sendButton" type="primary" circle :disabled="!busy && locked" :aria-label="busy ? '停止生成' : editingId ? '重发消息' : '发送消息'" :title="busy ? '停止生成' : editingId ? '重发消息' : '发送消息'" @click="busy ? emit('stop') : emit('submit')">
-         <icon-player-stop-filled v-if="busy" :size="14" />
-         <icon-arrow-up v-else :size="16" />
-@@ -61,6 +63,7 @@ import { ElMessage } from "element-plus";
+       <el-button v-if="running" class="stopButton" text circle :disabled="stopping" aria-label="停止生成" title="停止生成" @click="emit('stop')"><icon-player-stop-filled :size="14" /></el-button>
+       <el-button class="sendButton" type="primary" circle :disabled="locked || (running && !!editingId)" :aria-label="sendLabel" :title="sendTitle" @click="submitDraft()"><icon-arrow-up :size="16" /></el-button>
+     </div>
+@@ -59,6 +61,7 @@ import { ElMessage } from "element-plus";
  import { getReadableFileMimeType, readableFileAccept } from "@toonflow/server/documentFormats";
  import type { AgentContext, AgentMention, AgentStats } from "@toonflow/server/agent/types";
  import type { CanvasContext } from "@toonflow/tool-canvas/runtime";
@@ -117,23 +369,22 @@ index 4c8f3d0..b19523c 100644
  import modelPopover from "@/components/modelPopover.vue";
  import skillMenu from "../skillMenu.vue";
  import mentionMenu from "../mentionMenu.vue";
-@@ -75,8 +78,9 @@ import useVoiceInput from "./useVoiceInput";
+@@ -73,8 +76,8 @@ import useVoiceInput from "./useVoiceInput";
  import xSender, { type AnyTagProps } from "x-sender";
  import "x-sender/lib/XSender.css";
  
--const props = defineProps<{ active: boolean; disabled: boolean; busy: boolean; remoteRunning: boolean; deletingId?: string; directory?: string; contextUsage?: AgentContext; stats?: AgentStats; contextWindow: number }>();
--const emit = defineEmits<{ submit: []; stop: [] }>();
-+interface Props { active: boolean; disabled: boolean; busy: boolean; remoteRunning: boolean; deletingId?: string; directory?: string; contextUsage?: AgentContext; stats?: AgentStats; contextWindow: number; sharedModelLabel?: string }
-+const props = defineProps<Props>();
-+const emit = defineEmits<{ submit: []; stop: []; discuss: [] }>();
+-const props = defineProps<{ active: boolean; disabled: boolean; busy: boolean; remoteRunning: boolean; stopping: boolean; submitting: boolean; deletingId?: string; directory?: string; contextUsage?: AgentContext; stats?: AgentStats; contextWindow: number }>();
+-const emit = defineEmits<{ submit: [mode?: "steer" | "followUp"]; stop: [] }>();
++const props = defineProps<{ active: boolean; disabled: boolean; busy: boolean; remoteRunning: boolean; stopping: boolean; submitting: boolean; deletingId?: string; directory?: string; contextUsage?: AgentContext; stats?: AgentStats; contextWindow: number; sharedModelLabel?: string }>();
++const emit = defineEmits<{ submit: [mode?: "steer" | "followUp"]; stop: []; discuss: [] }>();
  const selectedModel = defineModel<string>("selectedModel", { required: true });
  const reasoningEffort = defineModel<string>("reasoningEffort", { required: true });
  const editingId = defineModel<string>("editingId");
 diff --git a/apps/web/src/components/agent/conversation/messageList.vue b/apps/web/src/components/agent/conversation/messageList.vue
-index 4b275b6..991af7b 100644
+index ccaf0ca..a1755db 100644
 --- a/apps/web/src/components/agent/conversation/messageList.vue
 +++ b/apps/web/src/components/agent/conversation/messageList.vue
-@@ -50,7 +50,7 @@
+@@ -52,7 +52,7 @@
                      </template>
                      <messageMarkdown v-if="!(part.collapsed ?? true)" :content="part.content" :streaming="!!item.streaming" :directory="directory" />
                    </chat-reasoning>
@@ -142,7 +393,7 @@ index 4b275b6..991af7b 100644
                    <messageMarkdown v-else-if="part.type === 'text' && part.content" :content="part.content" :streaming="!!item.streaming" :directory="directory" />
                  </template>
                  <attachmentList v-if="item.attachments?.length" :attachments="item.attachments" :directory="directory" />
-@@ -66,10 +66,11 @@
+@@ -68,11 +68,12 @@
              </template>
              <template v-else>
                <el-button v-if="item.content" class="messageAction" text circle aria-label="复制消息" title="复制消息" @click="emit('copy', mentionPlainText(item.content, item.mentions))"><icon-copy :size="14" /></el-button>
@@ -151,43 +402,44 @@ index 4b275b6..991af7b 100644
 +                <el-button v-if="isStudioEmbedded" text size="small" :disabled="locked" aria-label="交给 App 协作" @click="emit('discuss', item)">App 协作</el-button>
                  <el-button class="messageAction" text circle :disabled="locked || remoteRunning" aria-label="编辑消息" title="编辑消息" @click="emit('edit', item)"><icon-pencil :size="14" /></el-button>
                </template>
--              <el-button v-if="!item.report" class="messageAction" text circle :loading="deletingId === item.id" :disabled="locked || remoteRunning" aria-label="删除消息" title="删除消息" @click="emit('delete', item)"><icon-trash v-if="deletingId !== item.id" :size="14" /></el-button>
-+              <el-button v-if="!shared && !item.report" class="messageAction" text circle :loading="deletingId === item.id" :disabled="locked || remoteRunning" aria-label="删除消息" title="删除消息" @click="emit('delete', item)"><icon-trash v-if="deletingId !== item.id" :size="14" /></el-button>
+-              <el-button v-if="!item.report && !item.agentMessage" class="messageAction" text circle :loading="branchingId === item.id" :disabled="locked || remoteRunning || !(item.entryId || item.replyTo)" aria-label="从此消息创建分支" title="从此消息创建分支" @click="emit('branch', item)"><icon-arrow-fork v-if="branchingId !== item.id" :size="14" style="transform: rotate(90deg)" aria-hidden="true" /></el-button>
+-              <el-button v-if="!item.report && !item.agentMessage" class="messageAction" text circle :loading="deletingId === item.id" :disabled="locked || remoteRunning" aria-label="删除消息" title="删除消息" @click="emit('delete', item)"><icon-trash v-if="deletingId !== item.id" :size="14" /></el-button>
++              <el-button v-if="!shared && !item.report && !item.agentMessage" class="messageAction" text circle :loading="branchingId === item.id" :disabled="locked || remoteRunning || !(item.entryId || item.replyTo)" aria-label="从此消息创建分支" title="从此消息创建分支" @click="emit('branch', item)"><icon-arrow-fork v-if="branchingId !== item.id" :size="14" style="transform: rotate(90deg)" aria-hidden="true" /></el-button>
++              <el-button v-if="!shared && !item.report && !item.agentMessage" class="messageAction" text circle :loading="deletingId === item.id" :disabled="locked || remoteRunning" aria-label="删除消息" title="删除消息" @click="emit('delete', item)"><icon-trash v-if="deletingId !== item.id" :size="14" /></el-button>
              </template>
            </div>
            <browserPanel v-if="browserMessages.tools.has(item.id)" class="browserPreview" :tools="browserMessages.tools.get(item.id)!" :directory="directory" :active="active" :live="item.id === browserMessages.liveMessageId" />
-@@ -81,6 +82,7 @@
+@@ -84,6 +85,7 @@
  </template>
  
  <script setup lang="ts">
 +import { isStudioEmbedded } from "@/lib/platform";
- import { computed, nextTick, ref, watch, type ComponentPublicInstance } from "vue";
- import { defaultRangeExtractor, measureElement, observeElementRect, useVirtualizer } from "@tanstack/vue-virtual";
- import { IconArrowDown, IconArrowUpRight, IconAtom, IconChevronDown, IconChevronRight, IconCopy, IconMovie, IconPencil, IconPhoto, IconTrash, IconUsersGroup, IconVector, IconX } from "@tabler/icons-vue";
-@@ -99,9 +101,11 @@ import type { AgentMessage } from "../types";
+ import { computed, nextTick, onUpdated, ref, watch, type ComponentPublicInstance } from "vue";
+ import { defaultRangeExtractor, observeElementRect, useVirtualizer } from "@tanstack/vue-virtual";
+ import { IconArrowDown, IconArrowFork, IconArrowUpRight, IconAtom, IconChevronDown, IconChevronRight, IconCopy, IconCornerDownRight, IconMovie, IconPencil, IconPhoto, IconTrash, IconUsersGroup, IconVector, IconX } from "@tabler/icons-vue";
+@@ -102,9 +104,10 @@ import type { AgentMessage } from "../types";
  import "tdesign-vue-next/es/style/index.css";
  import "@tdesign-vue-next/chat/es/style/index.css";
  
--const props = defineProps<{ messages: AgentMessage[]; directory?: string; active: boolean; disabled: boolean; locked: boolean; busy: boolean; remoteRunning: boolean; compacting: boolean; editingId?: string; deletingId?: string; voiceActive: boolean }>();
--const emit = defineEmits<{ fillPrompt: [prompt: string]; copy: [content: string]; edit: [message: AgentMessage]; delete: [message: AgentMessage]; cancelEdit: [] }>();
-+interface Props { messages: AgentMessage[]; directory?: string; active: boolean; disabled: boolean; locked: boolean; busy: boolean; remoteRunning: boolean; compacting: boolean; editingId?: string; deletingId?: string; voiceActive: boolean; shared?: boolean }
-+const props = defineProps<Props>();
-+const emit = defineEmits<{ fillPrompt: [prompt: string]; copy: [content: string]; edit: [message: AgentMessage]; delete: [message: AgentMessage]; cancelEdit: []; discuss: [message: AgentMessage] }>();
+-const props = defineProps<{ messages: AgentMessage[]; directory?: string; active: boolean; disabled: boolean; locked: boolean; busy: boolean; remoteRunning: boolean; compacting: boolean; editingId?: string; deletingId?: string; branchingId?: string; voiceActive: boolean }>();
+-const emit = defineEmits<{ fillPrompt: [prompt: string]; copy: [content: string]; edit: [message: AgentMessage]; branch: [message: AgentMessage]; delete: [message: AgentMessage]; cancelEdit: [] }>();
++const props = defineProps<{ messages: AgentMessage[]; directory?: string; active: boolean; disabled: boolean; locked: boolean; busy: boolean; remoteRunning: boolean; compacting: boolean; editingId?: string; deletingId?: string; branchingId?: string; voiceActive: boolean; shared?: boolean }>();
++const emit = defineEmits<{ fillPrompt: [prompt: string]; copy: [content: string]; edit: [message: AgentMessage]; branch: [message: AgentMessage]; delete: [message: AgentMessage]; cancelEdit: []; discuss: [message: AgentMessage] }>();
  const browserMessages = computed(() => {
 +  if (props.shared) return { tools: new Map<string, AgentToolCall[]>(), liveMessageId: undefined };
    const groups = new Map<string, { id: string; tools: AgentToolCall[] }>();
+   const taskIds = new Map<string, string>();
    let turnId: string | undefined;
-   let liveMessageId: string | undefined;
-@@ -126,7 +130,7 @@ const browserMessages = computed(() => {
+@@ -136,7 +139,7 @@ const browserMessages = computed(() => {
    return { tools: new Map([...groups.values()].map(group => [group.id, group.tools])), liveMessageId };
  });
  // 同轮浏览器调用共用该轮首条浏览器消息底部的画面，原始工具记录仍完整保留。
--const displayedMessages = computed(() => props.messages.filter(message => browserMessages.value.tools.has(message.id) || message.role === "user" || message.error || message.report || message.attachments?.length ||
-+const displayedMessages = computed(() => props.messages.filter(message => props.shared || browserMessages.value.tools.has(message.id) || message.role === "user" || message.error || message.report || message.attachments?.length ||
+-const displayedMessages = computed(() => props.messages.filter(message => browserMessages.value.tools.has(message.id) || message.role === "user" || message.error || message.report || message.agentMessage || message.attachments?.length ||
++const displayedMessages = computed(() => props.messages.filter(message => props.shared || browserMessages.value.tools.has(message.id) || message.role === "user" || message.error || message.report || message.agentMessage || message.attachments?.length ||
    !message.parts?.length || message.parts.some(part => part.type !== "tool" || !isBrowserTool(part.tool))));
  const messageList = ref<HTMLDivElement>();
  const atLatestMessage = ref(true);
-@@ -185,14 +189,21 @@ function measureMessage(element: Element | ComponentPublicInstance | null) {
+@@ -200,14 +203,21 @@ function measureMessage(element: Element | ComponentPublicInstance | null) {
    });
  }
  
@@ -212,402 +464,22 @@ index 4b275b6..991af7b 100644
    { label: "搭建创作画布", description: "把创意串成清晰的节点流程", icon: IconVector, prompt: "帮我搭建一个创作画布，先和我确认需要的节点与流程。" },
    { label: "梳理故事分镜", description: "拆解故事，安排画面与镜头", icon: IconMovie, prompt: "帮我把故事整理成分镜，先和我确认故事内容、时长和画面风格。" },
 diff --git a/apps/web/src/components/agent/replyStream.ts b/apps/web/src/components/agent/replyStream.ts
-index ed7d1da..1274709 100644
+index 0856d14..5553a83 100644
 --- a/apps/web/src/components/agent/replyStream.ts
 +++ b/apps/web/src/components/agent/replyStream.ts
 @@ -6,7 +6,8 @@ import type { AgentMessage, AgentMessagePart } from "./types";
- export async function* readAgentEvents<T extends { type: string; message?: string } = AgentEvent>(response: Response, signal: AbortSignal) {
+ export async function* readAgentEvents<T extends { type: string; message?: unknown } = AgentEvent>(response: Response, signal: AbortSignal) {
    if (!response.ok) {
      const error = await response.json().catch(() => null);
--    throw new Error(error?.message || `请求失败（${response.status}）`);
+-    throw Object.assign(new Error(error?.message || `请求失败（${response.status}）`), { terminal: true });
 +    const details = Array.isArray(error?.data) ? error.data.filter((item: unknown): item is string => typeof item === "string") : [];
-+    throw new Error([error?.message || `请求失败（${response.status}）`, ...details].join("；"));
++    throw Object.assign(new Error([error?.message || `请求失败（${response.status}）`, ...details].join("；")), { terminal: true });
    }
    if (!response.body) throw new Error("未收到响应流");
    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-diff --git a/apps/web/src/components/agent/toolMessage.vue b/apps/web/src/components/agent/toolMessage.vue
-index 48cfc41..f03630b 100644
---- a/apps/web/src/components/agent/toolMessage.vue
-+++ b/apps/web/src/components/agent/toolMessage.vue
-@@ -33,7 +33,8 @@ import chatReasoning from "@tdesign-vue-next/chat/es/chat-reasoning";
- import type { AgentToolCall } from "@toonflow/server/agent/types";
- import messageMarkdown from "@/components/messageMarkdown.vue";
- 
--const { tool, directory, toolSessionId } = defineProps<{ tool: AgentToolCall; directory?: string; toolSessionId?: string }>();
-+interface Props { tool: AgentToolCall; directory?: string; toolSessionId?: string; shared?: boolean }
-+const { tool, directory, toolSessionId, shared } = defineProps<Props>();
- const emit = defineEmits<{ copy: [content: string] }>();
- const renderer = shallowRef<Component>();
- const rendererError = ref("");
-@@ -42,7 +43,7 @@ watch(() => [tool.name, tool.question?.callId] as const, async ([name], _previou
-   onCleanup(() => { active = false; });
-   renderer.value = undefined;
-   rendererError.value = "";
--  if (name === "subAgent") return;
-+  if (name === "subAgent" || shared) return;
-   try {
-     const component = await loadToolComponent(name);
-     if (active) {
-diff --git a/apps/web/src/components/settings/index.vue b/apps/web/src/components/settings/index.vue
-index c59a27b..ea5fbfe 100644
---- a/apps/web/src/components/settings/index.vue
-+++ b/apps/web/src/components/settings/index.vue
-@@ -2,7 +2,7 @@
-   <el-dialog v-model="visible" title="设置" width="min(1080px, calc(100vw - 32px))" alignCenter appendToBody>
-     <div class="settings">
-       <aside class="sidebar" aria-label="设置分类">
--        <template v-for="item in settingsPanels" :key="item.id">
-+        <template v-for="item in visiblePanels" :key="item.id">
-           <h3 v-if="item.groupLabel" class="settingsGroupLabel">{{ item.groupLabel }}</h3>
-           <button
-             class="settingsItem"
-@@ -16,6 +16,7 @@
-             <span>{{ item.label }}</span>
-           </button>
-         </template>
-+        <button v-if="isStudioEmbedded" class="settingsItem" type="button" :aria-expanded="showAdvanced" @click="toggleAdvanced">{{ showAdvanced ? '收起高级设置' : '高级设置' }}</button>
-       </aside>
-       <section class="content" :aria-label="activePanel.label" tabindex="0">
-         <h2 class="panelTitle">{{ activePanel.label }}</h2>
-@@ -36,9 +37,9 @@
- </template>
- 
- <script setup lang="ts">
--import { defineAsyncComponent, shallowRef } from "vue";
-+import { computed, defineAsyncComponent, ref, shallowRef } from "vue";
- import { hasDesktopUpdate } from "@/stores/desktopUpdate";
--import { isMobile } from "@/lib/platform";
-+import { isMobile, isStudioEmbedded } from "@/lib/platform";
- import {
-   IconPalette,
-   IconSettings,
-@@ -86,7 +87,14 @@ const settingsPanels = [
-   { id: "developer", label: "开发者选项", icon: IconCode, component: defineAsyncComponent(() => import("./panels/developer/index.vue")) },
-   { id: "about", label: "关于", icon: IconInfoCircle, component: defineAsyncComponent(() => import("./panels/about.vue")) },
- ];
--const activePanel = shallowRef(settingsPanels[0]!);
-+const commonPanelIds = ["languageModel", "mediaModel", "general", "ui"];
-+const showAdvanced = ref(!isStudioEmbedded);
-+const visiblePanels = computed(() => settingsPanels.filter(item => showAdvanced.value || commonPanelIds.includes(item.id)));
-+const activePanel = shallowRef(isStudioEmbedded ? settingsPanels.find(item => item.id === "languageModel")! : settingsPanels[0]!);
-+function toggleAdvanced() {
-+  showAdvanced.value = !showAdvanced.value;
-+  if (!showAdvanced.value && !commonPanelIds.includes(activePanel.value.id)) activePanel.value = visiblePanels.value[0]!;
-+}
- const visible = defineModel<boolean>({ default: false });
- </script>
- 
-diff --git a/apps/web/src/lib/mcpControl.ts b/apps/web/src/lib/mcpControl.ts
-index 7c28e95..12b0ddd 100644
---- a/apps/web/src/lib/mcpControl.ts
-+++ b/apps/web/src/lib/mcpControl.ts
-@@ -1,3 +1,4 @@
-+import { useStudioSession } from "./studioSession";
- import { locale } from "@toonflow/i18n/vue";
- import { onScopeDispose, shallowRef, watch, type WatchSource } from "vue";
- import { useRouter } from "vue-router";
-@@ -51,6 +52,7 @@ export function useMcpControl() {
-     ...workspaceControl.value?.getState(),
-     projectList: workspaceStore.projectList,
-   });
-+  useStudioSession(() => ({ directory: getState().directory, canvasId: getState().canvasId }));
-   watch(() => workspaceStore.project?.directory, () => {
-     for (const controller of calls.values()) controller.abort(new Error("工作区已切换，本次调用已停止"));
-   }, { flush: "sync" });
-diff --git a/apps/web/src/lib/platform.ts b/apps/web/src/lib/platform.ts
-index 33df935..a36a75e 100644
---- a/apps/web/src/lib/platform.ts
-+++ b/apps/web/src/lib/platform.ts
-@@ -5,3 +5,5 @@ export const isMobile = parameters.get("mobile") === "1";
- export const isDesktop = parameters.get("desktop") === "1";
- export const isRemoteConnection = (isMobile || isDesktop) && parameters.get("remote") === "1";
- export const isRemoteMobile = isMobile && isRemoteConnection;
-+
-+export const isStudioEmbedded = window.self !== window.top && parameters.get("embed") === "studio";
-diff --git a/apps/web/src/pages/home/index.vue b/apps/web/src/pages/home/index.vue
-index 9642ac9..6a38eea 100644
---- a/apps/web/src/pages/home/index.vue
-+++ b/apps/web/src/pages/home/index.vue
-@@ -24,7 +24,7 @@
-         </button>
-       </nav>
-       <div class="sidebarFooter">
--        <button class="sidebarItem deviceButton" :class="{ connected: deviceHubEnabled || mobileConnection.online === true }" type="button" :aria-label="mobileConnectionLabel" :title="mobileConnectionLabel" @click="mobileConnectVisible = true">
-+        <button v-if="!isStudioEmbedded" class="sidebarItem deviceButton" :class="{ connected: deviceHubEnabled || mobileConnection.online === true }" type="button" :aria-label="mobileConnectionLabel" :title="mobileConnectionLabel" @click="mobileConnectVisible = true">
-           <span class="sidebarIcon">
-             <component :is="deviceHubEnabled || mobileConnection.mode === 'remote' ? IconDeviceDesktop : IconQrcode" :size="18" aria-hidden="true" />
-             <span v-if="deviceHubEnabled || mobileConnection.online === true" class="connectionDot" />
-@@ -38,7 +38,7 @@
-           </span>
-           <span class="sidebarText">设置</span>
-         </button>
--        <a class="sidebarItem githubLink" href="https://github.com/HBAI-Ltd/Toonflow-app" target="_blank" rel="noopener noreferrer" aria-label="GitHub" title="GitHub">
-+        <a v-if="!isStudioEmbedded" class="sidebarItem githubLink" href="https://github.com/HBAI-Ltd/Toonflow-app" target="_blank" rel="noopener noreferrer" aria-label="GitHub" title="GitHub">
-           <icon-brand-github :size="18" aria-hidden="true" />
-           <span class="sidebarText">GitHub</span>
-         </a>
-@@ -69,7 +69,9 @@
-                       <workspacePicker ref="promptWorkspacePicker" v-model="workspaceDirectory" :disabled="creating || opening" />
-                     </div>
-                     <div class="sendActions">
--                      <modelPopover v-model="selectedModel" v-model:reasoningEffort="reasoningEffort" class="modelSelect" :disabled="creating || opening" />
-+                      <el-button v-if="isStudioEmbedded" text :loading="sharingInStudio" :disabled="creating || opening" aria-label="交给 App 协作" @click="shareWithStudio">App 协作</el-button>
-+                      <span v-if="isStudioEmbedded" class="text-sm text-slate-500">使用 dsh 本体模型</span>
-+                      <modelPopover v-else v-model="selectedModel" v-model:reasoningEffort="reasoningEffort" class="modelSelect" :disabled="creating || opening" />
-                       <el-button class="sendButton" type="primary" :circle="!!workspaceDirectory" :icon="workspaceDirectory ? IconArrowUp : IconFolder" :loading="creating" :disabled="creating || opening" :aria-label="workspaceDirectory ? '发送' : '选择工作目录'" @click="workspaceDirectory ? createProject() : promptWorkspacePicker?.chooseDirectory()">
-                         <template v-if="!workspaceDirectory" #default>选择工作目录</template>
-                       </el-button>
-@@ -110,7 +112,7 @@
-               </el-card>
-             </div>
-           </section>
--          <div data-home-section="explore"><explore :scrollElement="pageScroll?.wrapRef" /></div>
-+          <div v-if="!isStudioEmbedded" data-home-section="explore"><explore :scrollElement="pageScroll?.wrapRef" /></div>
-         </el-main>
-       </div>
-     </el-scrollbar>
-@@ -137,10 +139,12 @@ import {
- } from "@tabler/icons-vue";
- import modelPopover from "@/components/modelPopover.vue";
- import attachmentList from "@/components/agent/attachmentList.vue";
-+import { shareStudioMessage } from "@/lib/studioDiscussion";
- import { createPastedTextFile, readTextAttachment } from "@/components/agent/textAttachments";
- import type { AgentAttachment } from "@/components/agent/types";
- import logoUrl from "@toonflow/assets/logo.svg";
- import { useWorkspaceStore, type Project } from "@/stores/workspace";
-+import { isStudioEmbedded } from "@/lib/platform";
- import { hasDesktopUpdate } from "@/stores/desktopUpdate";
- import { deviceHubEnabled, mobileConnection, mobileConnectionLabel } from "@/lib/mobile";
- import useWorkspaceFiles from "@/lib/workspaceFiles";
-@@ -162,7 +166,7 @@ const activeSection = ref("home");
- const homeSections = [
-   { id: "home", label: "首页", icon: IconHome },
-   { id: "projects", label: "项目", icon: IconFolder },
--  { id: "explore", label: "探索", icon: IconCompass },
-+  ...(!isStudioEmbedded ? [{ id: "explore", label: "探索", icon: IconCompass }] : []),
- ];
- const mobileConnect = defineAsyncComponent(() => import("@/components/mobileConnect.vue"));
- const router = useRouter();
-@@ -370,6 +374,21 @@ function addAttachments(files: File[]) {
-   }
- }
- 
-+const sharingInStudio = ref(false);
-+async function shareWithStudio() {
-+  if (sharingInStudio.value || creating.value || opening.value) return;
-+  if (!prompt.value.trim() && !promptAttachments.value.length) return ElMessage.warning("请先输入协作内容");
-+  sharingInStudio.value = true;
-+  try {
-+    await shareStudioMessage({ content: prompt.value, attachments: promptAttachments.value }, workspaceDirectory.value);
-+    ElMessage.success("已带入 App 聊天草稿，请确认后发送；工作台原文已保留");
-+  } catch (error) {
-+    ElMessage.error(error instanceof Error ? error.message : "App 协作暂不可用");
-+  } finally {
-+    sharingInStudio.value = false;
-+  }
-+}
-+
- async function restoreAttachment(index: number) {
-   const attachment = promptAttachments.value[index];
-   if (attachment?.mimeType !== "text/plain" || creating.value || opening.value) return;
-diff --git a/apps/web/src/pages/workspace/components/floatingAgent.vue b/apps/web/src/pages/workspace/components/floatingAgent.vue
-index ef0fa9f..8e8a5dd 100644
---- a/apps/web/src/pages/workspace/components/floatingAgent.vue
-+++ b/apps/web/src/pages/workspace/components/floatingAgent.vue
-@@ -27,7 +27,7 @@
-         tabindex="0"
-         @pointerdown.stop="startInteraction($event, handle.edge)"
-         @keydown="resizeWithKeyboard($event, handle.edge)" />
--      <agent v-model="visible">
-+      <component :is="isStudioEmbedded ? studioConversation : agent" :key="projectDirectory" v-model="visible">
-         <template #menuActions>
-           <el-button
-             text
-@@ -39,7 +39,7 @@
-             <icon-layout-sidebar-right v-else :size="17" aria-hidden="true" />
-           </el-button>
-         </template>
--      </agent>
-+      </component>
-     </aside>
-   </teleport>
- </template>
-@@ -48,10 +48,15 @@
- import { computed, onBeforeUnmount, reactive, ref, shallowRef, watch } from "vue";
- import { IconLayoutSidebarRight, IconAppWindowBottomRight } from "@tabler/icons-vue";
- import agent from "@/components/agent/index.vue";
-+import studioConversation from "@/components/agent/studioConversation.vue";
-+import { isStudioEmbedded } from "@/lib/platform";
-+import { useWorkspaceStore } from "@/stores/workspace";
- 
- const visible = defineModel<boolean>({ default: false });
- const emit = defineEmits<{ resize: [width: number] }>();
--const docked = ref(false);
-+const docked = ref(isStudioEmbedded);
-+const workspace = useWorkspaceStore();
-+const projectDirectory = computed(() => workspace.project?.directory);
- const viewport = reactive({ width: window.innerWidth, height: window.innerHeight });
- const gap = computed(() => Math.min(15, viewport.width / 2, viewport.height / 2));
- const maxWidth = computed(() => Math.max(0, docked.value ? viewport.width * 0.45 : viewport.width - gap.value * 2));
-diff --git a/apps/web/src/pages/workspace/index.vue b/apps/web/src/pages/workspace/index.vue
-index 1d5ebb4..8071d8f 100644
---- a/apps/web/src/pages/workspace/index.vue
-+++ b/apps/web/src/pages/workspace/index.vue
-@@ -110,6 +110,12 @@
-         </el-tooltip>
-       </div>
-     </div>
-+    <div v-if="isStudioEmbedded && !agentVisible" class="tf:absolute tf:right-6 tf:top-4 tf:z-20 tf:flex tf:items-center tf:gap-2 tf:rounded-lg tf:bg-(--el-bg-color) tf:p-2 tf:text-sm tf:shadow">
-+      <span role="status" class="tf:max-w-48 tf:truncate" :title="studioSessionStatus">{{ studioSessionStatus }}</span>
-+      <el-button size="small" @click="openStudioChat">dsh 对话</el-button>
-+      <el-button v-if="workspaceStore.pendingAgentMessage" size="small" @click="retryStudioPrompt">重试发送</el-button>
-+      <a :href="legacyStudioUrl" target="_blank" rel="noopener noreferrer">旧对话 ↗</a>
-+    </div>
-     <floatingAgent v-model="agentVisible" :inert="workspaceStore.projectLoadingVisible" @resize="agentWidth = $event" />
-     <settings v-model="settingsVisible" />
-     <el-dialog v-model="contactVisible" :title="contactInfo.title" width="min(360px, calc(100vw - 32px))" alignCenter appendToBody>
-@@ -139,6 +145,8 @@ import { QRCode } from "tdesign-vue-next";
- import settings from "@/components/settings/index.vue";
- import { useWorkspaceStore } from "@/stores/workspace";
- import { registerWorkspaceControl, waitForControlValue } from "@/lib/mcpControl";
-+import { isStudioEmbedded } from "@/lib/platform";
-+import { requestStudioSession, sendPendingStudioPrompt, studioSessionStatus } from "@/lib/studioSession";
- import anonymousData from "@/lib/anonymousData";
- import { useProviderBalances } from "@/lib/providerBilling";
- import canvasPanel from "./panels/canvas/canvasHost.vue";
-@@ -169,6 +177,15 @@ const panelOptions = [
-   { label: "文档", value: "document", icon: IconFileText },
- ];
- const agentVisible = ref(true);
-+const legacyStudioUrl = location.origin + "/#/home";
-+async function openStudioChat() {
-+  try { await requestStudioSession("openChat"); }
-+  catch (error) { ElMessage.error(error instanceof Error ? error.message : "dsh 会话暂不可用"); }
-+}
-+async function retryStudioPrompt() {
-+  try { await sendPendingStudioPrompt(); }
-+  catch (error) { ElMessage.error(error instanceof Error ? error.message : "发送失败，请重试"); }
-+}
- const agentWidth = ref(0);
- const settingsVisible = ref(false);
- const helpVisible = ref(false);
-diff --git a/apps/web/src/pages/workspace/panels/canvas/components/assetLibrary.vue b/apps/web/src/pages/workspace/panels/canvas/components/assetLibrary.vue
-index b4a147b..ded8e30 100644
---- a/apps/web/src/pages/workspace/panels/canvas/components/assetLibrary.vue
-+++ b/apps/web/src/pages/workspace/panels/canvas/components/assetLibrary.vue
-@@ -57,7 +57,7 @@
- 
-   <el-dialog v-model="saveVisible" title="保存到素材库" width="460px" alignCenter appendToBody :closeOnClickModal="false" @opened="assetNameInput?.select()">
-     <el-form class="saveForm" labelPosition="top" @submit.prevent="saveAsset">
--      <el-form-item label="素材名称">
-+      <el-form-item label="素材名称" :error="assetNameError">
-         <el-input ref="assetNameInput" v-model="assetName" aria-label="素材名称" placeholder="输入完整文件名" :disabled="saving" @keydown.enter.prevent="saveAsset" />
-       </el-form-item>
-       <el-form-item v-if="outputs.length > 1" label="节点输出">
-@@ -72,7 +72,7 @@
-         </div>
-         <div class="locationPath" :title="saveLocationLabel">{{ saveLocationLabel }}</div>
-         <el-scrollbar class="saveFolderScroll" maxHeight="220px">
--          <el-tree class="saveFolderTree" :data="folders" nodeKey="path" :props="{ label: 'name' }" :icon="IconChevronRight" :currentNodeKey="saveDirectory" :expandOnClickNode="false" defaultExpandAll highlightCurrent @nodeClick="(entry: AssetEntry) => { if (!saving && saveFolderName === undefined) saveDirectory = entry.path; }">
-+          <el-tree class="saveFolderTree" :data="folders" nodeKey="path" :props="{ label: 'name' }" :icon="IconChevronRight" :currentNodeKey="saveDirectory" :expandOnClickNode="false" defaultExpandAll highlightCurrent @nodeClick="selectSaveFolder">
-             <template #default="{ data, node }">
-               <span class="saveFolderEntry"><component :is="node.expanded && !node.isLeaf ? IconFolderOpen : IconFolder" :size="18" aria-hidden="true" /><span>{{ data.name }}</span></span>
-             </template>
-@@ -87,7 +87,7 @@
-     </el-form>
-     <template #footer>
-       <el-button :disabled="saving" @click="saveVisible = false">取消</el-button>
--      <el-button type="primary" :loading="saving" :disabled="!assetName.trim() || /[\\/]/.test(assetName) || saveFolderName !== undefined" @click="saveAsset">保存</el-button>
-+      <el-button type="primary" :loading="saving" :disabled="!!assetNameError || saveFolderName !== undefined" @click="saveAsset">保存</el-button>
-     </template>
-   </el-dialog>
- </template>
-@@ -108,7 +108,8 @@ import assetBrowser from "./assetBrowser.vue";
- type AssetEntry = { name: string; path: string; type: "file" | "directory"; children?: AssetEntry[]; draft?: boolean };
- type AssetOutput = { label: string; output: NodeOutput };
- 
--const props = defineProps<{ directory?: string; expanded?: boolean }>();
-+interface Props { directory?: string; expanded?: boolean }
-+const props = defineProps<Props>();
- const visible = defineModel<boolean>({ default: false });
- const saveVisible = ref(false);
- const saving = ref(false);
-@@ -116,6 +117,7 @@ const entries = ref<AssetEntry[]>([]);
- const loading = ref(false);
- const folder = ref(".");
- const assetName = ref("");
-+const assetNameError = computed(() => fileNameError(assetName.value));
- const assetNameInput = ref<InputInstance>();
- const saveDirectory = ref(".");
- const saveFolderName = ref<string>();
-@@ -261,6 +263,10 @@ function selectFolder(entry: AssetEntry) {
-   folder.value = folder.value === path ? "." : path;
- }
- 
-+function selectSaveFolder(entry: AssetEntry) {
-+  if (!saving.value && saveFolderName.value === undefined) saveDirectory.value = entry.path;
-+}
-+
- async function startSaveFolder() {
-   saveFolderName.value = "新建文件夹";
-   await nextTick();
-@@ -283,8 +289,18 @@ async function createFolder() {
-   }
- }
- 
-+function fileNameError(value: string) {
-+  const name = value.trim();
-+  if (!name) return "请输入名称";
-+  if (/[<>:"/\\|?*\x00-\x1f]/.test(name)) return "名称不能包含 < > : \" / \\ | ? * 或控制字符";
-+  if (name.endsWith(".")) return "名称不能以点结尾";
-+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) return "名称不能使用系统保留名";
-+  return "";
-+}
-+
- async function createAssetFolder(parent: string, name: string) {
--  if (/[\\/]/.test(name)) throw new Error("文件夹名称不能包含斜杠");
-+  const error = fileNameError(name);
-+  if (error) throw new Error(error);
-   const path = parent === "." ? name : `${parent}/${name}`;
-   await axios.post("/api/assets/mkdir", { path });
-   return path;
-@@ -293,7 +309,9 @@ async function createAssetFolder(parent: string, name: string) {
- async function openSave(label: string, items: AssetOutput[]) {
-   outputs.value = items;
-   selectedOutput.value = 0;
--  assetName.value = label.endsWith(extension.value) ? label : `${label}${extension.value}`;
-+  let name = label.trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[. ]+$/, "") || "素材";
-+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = `_${name}`;
-+  assetName.value = name.endsWith(extension.value) ? name : `${name}${extension.value}`;
-   saveDirectory.value = folder.value;
-   saveFolderName.value = undefined;
-   sourceDirectory = props.directory;
-@@ -308,7 +326,8 @@ async function openSave(label: string, items: AssetOutput[]) {
- async function saveAsset() {
-   const output = outputs.value[selectedOutput.value]?.output;
-   const name = assetName.value.trim();
--  if (!output || !name || /[\\/]/.test(name) || saving.value || saveFolderName.value !== undefined) return;
-+  if (!output || saving.value || saveFolderName.value !== undefined) return;
-+  if (assetNameError.value) return ElMessage.error(assetNameError.value);
-   const path = saveDirectory.value === "." ? name : `${saveDirectory.value}/${name}`;
-   saving.value = true;
-   try {
-diff --git a/apps/web/src/types/components.d.ts b/apps/web/src/types/components.d.ts
-index bccee34..71ebcf2 100644
---- a/apps/web/src/types/components.d.ts
-+++ b/apps/web/src/types/components.d.ts
-@@ -121,6 +121,8 @@ declare module 'vue' {
-     Settings: typeof import('./../components/settings/index.vue')['default']
-     SingleAgentDialog: typeof import('./../components/singleAgentDialog.vue')['default']
-     SkillMenu: typeof import('./../components/agent/skillMenu.vue')['default']
-+    StudioConversation: typeof import('./../components/agent/studioConversation.vue')['default']
-+    StudioModelPicker: typeof import('./../components/agent/studioModelPicker.vue')['default']
-     TfAccount: typeof import('./../components/settings/tfAccount.vue')['default']
-     TfRechargeDialog: typeof import('./../components/settings/tfRechargeDialog.vue')['default']
-     ToolMessage: typeof import('./../components/agent/toolMessage.vue')['default']
 diff --git a/apps/web/src/components/agent/studioConversation.vue b/apps/web/src/components/agent/studioConversation.vue
 new file mode 100644
-index 0000000..6ed3b3b
+index 0000000..09bf8fb
 --- /dev/null
 +++ b/apps/web/src/components/agent/studioConversation.vue
 @@ -0,0 +1,96 @@
@@ -632,7 +504,7 @@ index 0000000..6ed3b3b
 +      <messageInput ref="input" v-model:selectedModel="selectedModel" v-model:reasoningEffort="reasoningEffort"
 +        v-model:voiceActive="voiceActive" v-model:restoringAttachment="restoringAttachment"
 +        :active="visible" :disabled="!studioSessionConnected || sending || stopping" :busy="!!state?.running" :remoteRunning="!!state?.running"
-+        :directory="directory" :contextWindow="0" :sharedModelLabel="state?.modelLabel || 'dsh 当前模型'" @submit="sendMessage" @stop="stopMessage">
++        :stopping="stopping" :submitting="sending" :directory="directory" :contextWindow="0" :sharedModelLabel="state?.modelLabel || 'dsh 当前模型'" @submit="sendMessage" @stop="stopMessage">
 +        <template #modelSelector><studioModelPicker :disabled="locked" /></template>
 +      </messageInput>
 +    </div>
@@ -707,6 +579,185 @@ index 0000000..6ed3b3b
 +  catch { ElMessage.error("复制失败，请重试"); }
 +}
 +</script>
+diff --git a/apps/web/src/components/agent/studioModelPicker.vue b/apps/web/src/components/agent/studioModelPicker.vue
+new file mode 100644
+index 0000000..ea1212b
+--- /dev/null
++++ b/apps/web/src/components/agent/studioModelPicker.vue
+@@ -0,0 +1,71 @@
++<template>
++  <details class="tf:relative tf:min-w-0 tf:flex-1 tf:text-xs">
++    <summary class="tf:cursor-pointer tf:list-none tf:truncate tf:py-1" :title="state?.modelLabel">
++      {{ state?.modelMode === 'custom' ? '自选' : '跟随系统' }} · {{ state?.modelLabel || '正在读取模型' }} ▾
++    </summary>
++    <div class="tf:absolute tf:bottom-full tf:left-0 tf:z-50 tf:mb-2 tf:flex tf:w-72 tf:max-w-[75vw] tf:flex-col tf:gap-3 tf:rounded-lg tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color-overlay) tf:p-3 tf:shadow-lg">
++      <label class="tf:flex tf:flex-col tf:gap-1">文本模型
++        <select aria-label="文本模型来源" :value="state?.modelMode || 'system'" :disabled="disabled || saving" class="tf:rounded tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color) tf:p-2 tf:text-inherit" @change="changeMode">
++          <option value="system">跟随系统默认模型</option><option value="custom">为当前项目自选模型</option>
++        </select>
++      </label>
++      <label v-if="state?.modelMode === 'custom'" class="tf:flex tf:flex-col tf:gap-1">已配置的 dsh 模型
++        <select aria-label="项目文本模型" :value="selectedKey" :disabled="disabled || saving" class="tf:w-full tf:rounded tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color) tf:p-2 tf:text-inherit" @change="changeModel">
++          <option v-if="!models.some(item => item.key === selectedKey)" :value="selectedKey" disabled>{{ state.modelLabel || '请选择模型' }}</option>
++          <optgroup v-for="group in state.modelGroups" :key="group.id" :label="group.name"><option v-for="model in group.models" :key="model.id" :value="modelKey(group.id, model.id)">{{ model.name }}</option></optgroup>
++        </select>
++      </label>
++      <label v-if="state?.modelMode === 'custom' && efforts.length" class="tf:flex tf:flex-col tf:gap-1">思考强度
++        <select aria-label="模型思考强度" :value="state.modelSelection?.reasoningEffort || currentModel?.reasoning?.defaultEffort" :disabled="disabled || saving" class="tf:rounded tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color) tf:p-2 tf:text-inherit" @change="changeEffort"><option v-for="effort in efforts" :key="effort.id" :value="effort.id">{{ effort.name }}</option></select>
++      </label>
++      <p class="tf:m-0 tf:text-(--el-text-color-secondary)">{{ state?.modelMode === 'custom' ? '只修改当前项目，下次发送生效。' : '连接和发送前同步 dsh 默认模型。' }}</p>
++      <p v-if="error || state?.modelError" role="alert" class="tf:m-0 tf:text-(--el-color-danger)">{{ error || state?.modelError }}</p>
++      <button type="button" :disabled="saving" class="tf:cursor-pointer tf:rounded tf:border-0 tf:bg-(--el-fill-color) tf:p-2 tf:text-inherit" @click="openSettings">添加 / 管理自定义模型…</button>
++    </div>
++  </details>
++</template>
++
++<script setup lang="ts">
++import { computed, ref } from "vue";
++import { ElMessage } from "element-plus";
++import { studioChatState as state, requestStudioSession, type StudioModelChoice } from "@/lib/studioSession";
++
++interface Props { disabled: boolean }
++defineProps<Props>();
++const saving = ref(false);
++const error = ref("");
++const modelKey = (provider: string, model: string) => JSON.stringify([provider, model]);
++const models = computed(() => state.value?.modelGroups.flatMap(group => group.models.map(model => ({ ...model, provider: group.id, key: modelKey(group.id, model.id) }))) ?? []);
++const selectedKey = computed(() => state.value?.modelSelection ? modelKey(state.value.modelSelection.provider, state.value.modelSelection.model) : "");
++const currentModel = computed(() => models.value.find(model => model.key === selectedKey.value));
++const efforts = computed(() => currentModel.value?.reasoning?.efforts ?? []);
++
++async function select(choice: StudioModelChoice) {
++  if (saving.value) return;
++  saving.value = true;
++  error.value = "";
++  try { await requestStudioSession("model", undefined, undefined, choice); }
++  catch (cause) { error.value = cause instanceof Error ? cause.message : "模型切换失败，请重试"; }
++  finally { saving.value = false; }
++}
++
++function changeMode(event: Event) {
++  const mode = (event.target as HTMLSelectElement).value;
++  if (mode === "system") void select({ mode });
++  else if (state.value?.modelSelection) void select({ mode: "custom", selection: state.value.modelSelection });
++}
++
++function changeModel(event: Event) {
++  const model = models.value.find(item => item.key === (event.target as HTMLSelectElement).value);
++  if (model) void select({ mode: "custom", selection: { provider: model.provider, model: model.id, reasoningEffort: model.reasoning?.defaultEffort } });
++}
++
++function changeEffort(event: Event) {
++  if (state.value?.modelSelection) void select({ mode: "custom", selection: { ...state.value.modelSelection, reasoningEffort: (event.target as HTMLSelectElement).value } });
++}
++
++async function openSettings() {
++  try { await requestStudioSession("modelSettings"); ElMessage.info("在 dsh 设置的模型页面添加供应商或模型，保存后返回此处选择。"); }
++  catch (cause) { error.value = cause instanceof Error ? cause.message : "无法打开模型设置"; }
++}
++</script>
+diff --git a/apps/web/src/components/agent/toolMessage.vue b/apps/web/src/components/agent/toolMessage.vue
+index 1f95545..a97f897 100644
+--- a/apps/web/src/components/agent/toolMessage.vue
++++ b/apps/web/src/components/agent/toolMessage.vue
+@@ -34,7 +34,8 @@ import type { AgentToolCall } from "@toonflow/server/agent/types";
+ import messageMarkdown from "@/components/messageMarkdown.vue";
+ import marketInstallApproval from "./marketInstallApproval.vue";
+ 
+-const { tool, directory, toolSessionId } = defineProps<{ tool: AgentToolCall; directory?: string; toolSessionId?: string }>();
++interface Props { tool: AgentToolCall; directory?: string; toolSessionId?: string; shared?: boolean }
++const { tool, directory, toolSessionId, shared } = defineProps<Props>();
+ const emit = defineEmits<{ copy: [content: string] }>();
+ const renderer = shallowRef<Component>();
+ const rendererError = ref("");
+@@ -42,6 +43,7 @@ watch(() => [tool.name, tool.question?.callId] as const, async ([name], previous
+   let active = true;
+   onCleanup(() => { active = false; });
+   rendererError.value = "";
++  if (shared) return;
+   if (name === "installMarketPlugin" && !toolSessionId) {
+     renderer.value = marketInstallApproval;
+     return;
+diff --git a/apps/web/src/components/settings/index.vue b/apps/web/src/components/settings/index.vue
+index 705c94e..21fbb88 100644
+--- a/apps/web/src/components/settings/index.vue
++++ b/apps/web/src/components/settings/index.vue
+@@ -2,7 +2,7 @@
+   <el-dialog v-model="visible" title="设置" width="min(1080px, calc(100vw - 32px))" alignCenter appendToBody>
+     <div class="settings">
+       <aside class="sidebar" aria-label="设置分类">
+-        <template v-for="item in settingsPanels" :key="item.id">
++        <template v-for="item in visiblePanels" :key="item.id">
+           <h3 v-if="item.groupLabel" class="settingsGroupLabel">{{ item.groupLabel }}</h3>
+           <button
+             class="settingsItem"
+@@ -16,6 +16,7 @@
+             <span>{{ item.label }}</span>
+           </button>
+         </template>
++        <button v-if="isStudioEmbedded" class="settingsItem" type="button" :aria-expanded="showAdvanced" @click="toggleAdvanced">{{ showAdvanced ? '收起高级设置' : '高级设置' }}</button>
+       </aside>
+       <section class="content" :aria-label="activePanel.label" tabindex="0">
+         <h2 class="panelTitle">{{ activePanel.label }}</h2>
+@@ -39,13 +40,13 @@
+ 
+ <script setup lang="ts">
+ import { translate } from "@toonflow/i18n/vue";
+-import { computed, defineAsyncComponent, shallowRef, watch } from "vue";
++import { computed, defineAsyncComponent, ref, shallowRef, watch } from "vue";
+ import userAccount from "@toonflow/multi-tenant-user-web/account";
+ import { hasDesktopUpdate } from "@/stores/desktopUpdate";
+ import { multiTenantEnabled } from "@/stores/settings";
+ import { currentUser, publicWeb } from "@/stores/multiTenant";
+ import http from "@/lib/http";
+-import { isMobile } from "@/lib/platform";
++import { isMobile, isStudioEmbedded } from "@/lib/platform";
+ import {
+   IconSettings,
+   IconPhotoVideo,
+@@ -101,7 +102,14 @@ const settingsPanels = computed(() => allSettingsPanels.filter(item => {
+   if (publicWeb.value && ["multiTenant", "deviceLink", "network", "mcp", "developer", "pluginMarket"].includes(item.id)) return false;
+   return !multiTenantEnabled.value || !["languageModel", "mediaModel", "developer"].includes(item.id);
+ }).map(item => publicWeb.value && item.id === "account" ? publicAccountPanel : item));
+-const activePanel = shallowRef(settingsPanels.value[0]!);
++const commonPanelIds = ["languageModel", "mediaModel", "general", "personalization"];
++const showAdvanced = ref(!isStudioEmbedded);
++const visiblePanels = computed(() => settingsPanels.value.filter(item => showAdvanced.value || commonPanelIds.includes(item.id)));
++const activePanel = shallowRef((isStudioEmbedded ? visiblePanels.value[0] : settingsPanels.value[0])!);
++function toggleAdvanced() {
++  showAdvanced.value = !showAdvanced.value;
++  if (!showAdvanced.value && !commonPanelIds.includes(activePanel.value.id)) activePanel.value = visiblePanels.value[0]!;
++}
+ const visible = defineModel<boolean>({ default: false });
+ 
+ watch(settingsPanels, panels => {
+diff --git a/apps/web/src/lib/mcpControl.ts b/apps/web/src/lib/mcpControl.ts
+index a8e10bd..1b46e02 100644
+--- a/apps/web/src/lib/mcpControl.ts
++++ b/apps/web/src/lib/mcpControl.ts
+@@ -1,3 +1,4 @@
++import { useStudioSession } from "./studioSession";
+ import { locale } from "@toonflow/i18n/vue";
+ import { onScopeDispose, shallowRef, watch, type WatchSource } from "vue";
+ import { useRouter } from "vue-router";
+@@ -57,6 +58,7 @@ export function useMcpControl() {
+     ...workspaceControl.value?.getState(),
+     projectList: workspaceStore.projectList,
+   });
++  useStudioSession(() => ({ directory: getState().directory, canvasId: getState().canvasId }));
+   watch(() => workspaceStore.project?.directory, () => {
+     for (const controller of calls.values()) controller.abort(new Error("工作区已切换，本次调用已停止"));
+   }, { flush: "sync" });
+diff --git a/apps/web/src/lib/platform.ts b/apps/web/src/lib/platform.ts
+index d8fed92..4df5707 100644
+--- a/apps/web/src/lib/platform.ts
++++ b/apps/web/src/lib/platform.ts
+@@ -33,3 +33,5 @@ export function setPlatformSimulation(value: string) {
+   else url.searchParams.set("simulatePlatform", value);
+   window.location.replace(url.href);
+ }
++
++export const isStudioEmbedded = window.self !== window.top && parameters.get("embed") === "studio";
 diff --git a/apps/web/src/lib/studioDiscussion.ts b/apps/web/src/lib/studioDiscussion.ts
 new file mode 100644
 index 0000000..86dae05
@@ -1222,292 +1273,454 @@ index 0000000..fcfe33f
 +  if (text.length > 100000) throw new Error("内容超过 100000 字符，请在 dsh 对话中引用附件路径");
 +  await requestStudioSession("send", { directory, canvasId: currentContext.directory === directory ? currentContext.canvasId : null }, text);
 +}
-diff --git a/apps/web/src/components/agent/studioModelPicker.vue b/apps/web/src/components/agent/studioModelPicker.vue
-new file mode 100644
-index 0000000..ea1212b
---- /dev/null
-+++ b/apps/web/src/components/agent/studioModelPicker.vue
-@@ -0,0 +1,71 @@
-+<template>
-+  <details class="tf:relative tf:min-w-0 tf:flex-1 tf:text-xs">
-+    <summary class="tf:cursor-pointer tf:list-none tf:truncate tf:py-1" :title="state?.modelLabel">
-+      {{ state?.modelMode === 'custom' ? '自选' : '跟随系统' }} · {{ state?.modelLabel || '正在读取模型' }} ▾
-+    </summary>
-+    <div class="tf:absolute tf:bottom-full tf:left-0 tf:z-50 tf:mb-2 tf:flex tf:w-72 tf:max-w-[75vw] tf:flex-col tf:gap-3 tf:rounded-lg tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color-overlay) tf:p-3 tf:shadow-lg">
-+      <label class="tf:flex tf:flex-col tf:gap-1">文本模型
-+        <select aria-label="文本模型来源" :value="state?.modelMode || 'system'" :disabled="disabled || saving" class="tf:rounded tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color) tf:p-2 tf:text-inherit" @change="changeMode">
-+          <option value="system">跟随系统默认模型</option><option value="custom">为当前项目自选模型</option>
-+        </select>
-+      </label>
-+      <label v-if="state?.modelMode === 'custom'" class="tf:flex tf:flex-col tf:gap-1">已配置的 dsh 模型
-+        <select aria-label="项目文本模型" :value="selectedKey" :disabled="disabled || saving" class="tf:w-full tf:rounded tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color) tf:p-2 tf:text-inherit" @change="changeModel">
-+          <option v-if="!models.some(item => item.key === selectedKey)" :value="selectedKey" disabled>{{ state.modelLabel || '请选择模型' }}</option>
-+          <optgroup v-for="group in state.modelGroups" :key="group.id" :label="group.name"><option v-for="model in group.models" :key="model.id" :value="modelKey(group.id, model.id)">{{ model.name }}</option></optgroup>
-+        </select>
-+      </label>
-+      <label v-if="state?.modelMode === 'custom' && efforts.length" class="tf:flex tf:flex-col tf:gap-1">思考强度
-+        <select aria-label="模型思考强度" :value="state.modelSelection?.reasoningEffort || currentModel?.reasoning?.defaultEffort" :disabled="disabled || saving" class="tf:rounded tf:border tf:border-(--el-border-color) tf:bg-(--el-bg-color) tf:p-2 tf:text-inherit" @change="changeEffort"><option v-for="effort in efforts" :key="effort.id" :value="effort.id">{{ effort.name }}</option></select>
-+      </label>
-+      <p class="tf:m-0 tf:text-(--el-text-color-secondary)">{{ state?.modelMode === 'custom' ? '只修改当前项目，下次发送生效。' : '连接和发送前同步 dsh 默认模型。' }}</p>
-+      <p v-if="error || state?.modelError" role="alert" class="tf:m-0 tf:text-(--el-color-danger)">{{ error || state?.modelError }}</p>
-+      <button type="button" :disabled="saving" class="tf:cursor-pointer tf:rounded tf:border-0 tf:bg-(--el-fill-color) tf:p-2 tf:text-inherit" @click="openSettings">添加 / 管理自定义模型…</button>
+diff --git a/apps/web/src/pages/home/index.vue b/apps/web/src/pages/home/index.vue
+index ed4ff24..b3068f2 100644
+--- a/apps/web/src/pages/home/index.vue
++++ b/apps/web/src/pages/home/index.vue
+@@ -25,8 +25,8 @@
+         </button>
+       </nav>
+       <div class="sidebarFooter">
+-        <homeAdvertisementCarousel class="sidebarPromotion" :advertisements="advertisements.sidebar" @activate="activateAdvertisement" />
+-        <button v-if="!publicWeb" class="sidebarItem deviceButton" :class="{ connected: deviceHubEnabled || mobileConnection.online === true }" type="button" :aria-label="mobileConnectionLabel" :title="mobileConnectionLabel" @click="mobileConnectVisible = true">
++        <homeAdvertisementCarousel v-if="!isStudioEmbedded" class="sidebarPromotion" :advertisements="advertisements.sidebar" @activate="activateAdvertisement" />
++        <button v-if="!publicWeb && !isStudioEmbedded" class="sidebarItem deviceButton" :class="{ connected: deviceHubEnabled || mobileConnection.online === true }" type="button" :aria-label="mobileConnectionLabel" :title="mobileConnectionLabel" @click="mobileConnectVisible = true">
+           <span class="sidebarIcon">
+             <component :is="deviceHubEnabled || mobileConnection.mode === 'remote' ? IconDeviceDesktop : IconQrcode" :size="18" aria-hidden="true" />
+             <span v-if="deviceHubEnabled || mobileConnection.online === true" class="connectionDot" />
+@@ -40,7 +40,7 @@
+           </span>
+           <span class="sidebarText">设置</span>
+         </button>
+-        <a class="sidebarItem githubLink" href="https://github.com/HBAI-Ltd/Toonflow-app" target="_blank" rel="noopener noreferrer" aria-label="GitHub" title="GitHub">
++        <a v-if="!isStudioEmbedded" class="sidebarItem githubLink" href="https://github.com/HBAI-Ltd/Toonflow-app" target="_blank" rel="noopener noreferrer" aria-label="GitHub" title="GitHub">
+           <icon-brand-github :size="18" aria-hidden="true" />
+           <span class="sidebarText">GitHub</span>
+         </a>
+@@ -71,7 +71,9 @@
+                       <workspacePicker ref="promptWorkspacePicker" v-model="workspaceDirectory" :disabled="creating || opening" />
+                     </div>
+                     <div class="sendActions">
+-                      <modelPopover v-model="selectedModel" v-model:reasoningEffort="reasoningEffort" class="modelSelect" :disabled="creating || opening" />
++                      <el-button v-if="isStudioEmbedded" text :loading="sharingInStudio" :disabled="creating || opening" aria-label="交给 App 协作" @click="shareWithStudio">App 协作</el-button>
++                      <span v-if="isStudioEmbedded" class="text-sm text-slate-500">使用 dsh 本体模型</span>
++                      <modelPopover v-else v-model="selectedModel" v-model:reasoningEffort="reasoningEffort" class="modelSelect" :disabled="creating || opening" />
+                       <el-button class="sendButton" type="primary" :circle="!!workspaceDirectory" :icon="workspaceDirectory ? IconArrowUp : IconFolder" :loading="creating" :disabled="creating || opening" :aria-label="workspaceDirectory ? '发送' : '选择工作目录'" @click="workspaceDirectory ? createProject() : promptWorkspacePicker?.chooseDirectory()">
+                         <template v-if="!workspaceDirectory" #default>选择工作目录</template>
+                       </el-button>
+@@ -110,7 +112,7 @@
+             </div>
+             <div v-else id="projectListContent" class="teamProjects" />
+           </section>
+-          <div data-home-section="explore"><explore :scrollElement="pageScroll?.wrapRef" /></div>
++          <div v-if="!isStudioEmbedded" data-home-section="explore"><explore :scrollElement="pageScroll?.wrapRef" /></div>
+         </el-main>
+       </div>
+     </el-scrollbar>
+@@ -137,12 +139,14 @@ import {
+ } from "@tabler/icons-vue";
+ import modelPopover from "@/components/modelPopover.vue";
+ import attachmentList from "@/components/agent/attachmentList.vue";
++import { shareStudioMessage } from "@/lib/studioDiscussion";
+ import { createPastedTextFile, readTextAttachment } from "@/components/agent/textAttachments";
+ import type { AgentAttachment } from "@/components/agent/types";
+ import type { HomeAdvertisement, HomeAdvertisements } from "@toonflow/server/channel";
+ import logoUrl from "@toonflow/assets/logo.svg";
+ import { useWorkspaceStore, type Project } from "@/stores/workspace";
+ import { currentUser, publicWeb } from "@/stores/multiTenant";
++import { isStudioEmbedded } from "@/lib/platform";
+ import { hasDesktopUpdate } from "@/stores/desktopUpdate";
+ import { deviceHubEnabled, mobileConnection, mobileConnectionLabel } from "@/lib/mobile";
+ import useWorkspaceFiles from "@/lib/workspaceFiles";
+@@ -170,7 +174,7 @@ const projectType = ref<"local" | "team">("local");
+ const homeSections = [
+   { id: "home", label: "首页", icon: IconHome },
+   { id: "projects", label: "项目", icon: IconFolder },
+-  { id: "explore", label: "探索", icon: IconCompass },
++  ...(!isStudioEmbedded ? [{ id: "explore", label: "探索", icon: IconCompass }] : []),
+ ];
+ const mobileConnect = defineAsyncComponent(() => import("@/components/mobileConnect.vue"));
+ const router = useRouter();
+@@ -484,6 +488,21 @@ function addAttachments(files: File[]) {
+   }
+ }
+ 
++const sharingInStudio = ref(false);
++async function shareWithStudio() {
++  if (sharingInStudio.value || creating.value || opening.value) return;
++  if (!prompt.value.trim() && !promptAttachments.value.length) return ElMessage.warning("请先输入协作内容");
++  sharingInStudio.value = true;
++  try {
++    await shareStudioMessage({ content: prompt.value, attachments: promptAttachments.value }, workspaceDirectory.value);
++    ElMessage.success("已带入 App 聊天草稿，请确认后发送；工作台原文已保留");
++  } catch (error) {
++    ElMessage.error(error instanceof Error ? error.message : "App 协作暂不可用");
++  } finally {
++    sharingInStudio.value = false;
++  }
++}
++
+ async function restoreAttachment(index: number) {
+   const attachment = promptAttachments.value[index];
+   if (attachment?.mimeType !== "text/plain" || creating.value || opening.value) return;
+diff --git a/apps/web/src/pages/workspace/components/floatingAgent.vue b/apps/web/src/pages/workspace/components/floatingAgent.vue
+index ef0fa9f..8e8a5dd 100644
+--- a/apps/web/src/pages/workspace/components/floatingAgent.vue
++++ b/apps/web/src/pages/workspace/components/floatingAgent.vue
+@@ -27,7 +27,7 @@
+         tabindex="0"
+         @pointerdown.stop="startInteraction($event, handle.edge)"
+         @keydown="resizeWithKeyboard($event, handle.edge)" />
+-      <agent v-model="visible">
++      <component :is="isStudioEmbedded ? studioConversation : agent" :key="projectDirectory" v-model="visible">
+         <template #menuActions>
+           <el-button
+             text
+@@ -39,7 +39,7 @@
+             <icon-layout-sidebar-right v-else :size="17" aria-hidden="true" />
+           </el-button>
+         </template>
+-      </agent>
++      </component>
+     </aside>
+   </teleport>
+ </template>
+@@ -48,10 +48,15 @@
+ import { computed, onBeforeUnmount, reactive, ref, shallowRef, watch } from "vue";
+ import { IconLayoutSidebarRight, IconAppWindowBottomRight } from "@tabler/icons-vue";
+ import agent from "@/components/agent/index.vue";
++import studioConversation from "@/components/agent/studioConversation.vue";
++import { isStudioEmbedded } from "@/lib/platform";
++import { useWorkspaceStore } from "@/stores/workspace";
+ 
+ const visible = defineModel<boolean>({ default: false });
+ const emit = defineEmits<{ resize: [width: number] }>();
+-const docked = ref(false);
++const docked = ref(isStudioEmbedded);
++const workspace = useWorkspaceStore();
++const projectDirectory = computed(() => workspace.project?.directory);
+ const viewport = reactive({ width: window.innerWidth, height: window.innerHeight });
+ const gap = computed(() => Math.min(15, viewport.width / 2, viewport.height / 2));
+ const maxWidth = computed(() => Math.max(0, docked.value ? viewport.width * 0.45 : viewport.width - gap.value * 2));
+diff --git a/apps/web/src/pages/workspace/index.vue b/apps/web/src/pages/workspace/index.vue
+index cc47297..a814bc5 100644
+--- a/apps/web/src/pages/workspace/index.vue
++++ b/apps/web/src/pages/workspace/index.vue
+@@ -110,6 +110,12 @@
+         </el-tooltip>
+       </div>
+     </div>
++    <div v-if="isStudioEmbedded && !agentVisible" class="tf:absolute tf:right-6 tf:top-4 tf:z-20 tf:flex tf:items-center tf:gap-2 tf:rounded-lg tf:bg-(--el-bg-color) tf:p-2 tf:text-sm tf:shadow">
++      <span role="status" class="tf:max-w-48 tf:truncate" :title="studioSessionStatus">{{ studioSessionStatus }}</span>
++      <el-button size="small" @click="openStudioChat">dsh 对话</el-button>
++      <el-button v-if="workspaceStore.pendingAgentMessage" size="small" @click="retryStudioPrompt">重试发送</el-button>
++      <a :href="legacyStudioUrl" target="_blank" rel="noopener noreferrer">旧对话 ↗</a>
 +    </div>
-+  </details>
-+</template>
-+
-+<script setup lang="ts">
-+import { computed, ref } from "vue";
-+import { ElMessage } from "element-plus";
-+import { studioChatState as state, requestStudioSession, type StudioModelChoice } from "@/lib/studioSession";
-+
-+interface Props { disabled: boolean }
-+defineProps<Props>();
-+const saving = ref(false);
-+const error = ref("");
-+const modelKey = (provider: string, model: string) => JSON.stringify([provider, model]);
-+const models = computed(() => state.value?.modelGroups.flatMap(group => group.models.map(model => ({ ...model, provider: group.id, key: modelKey(group.id, model.id) }))) ?? []);
-+const selectedKey = computed(() => state.value?.modelSelection ? modelKey(state.value.modelSelection.provider, state.value.modelSelection.model) : "");
-+const currentModel = computed(() => models.value.find(model => model.key === selectedKey.value));
-+const efforts = computed(() => currentModel.value?.reasoning?.efforts ?? []);
-+
-+async function select(choice: StudioModelChoice) {
-+  if (saving.value) return;
-+  saving.value = true;
-+  error.value = "";
-+  try { await requestStudioSession("model", undefined, undefined, choice); }
-+  catch (cause) { error.value = cause instanceof Error ? cause.message : "模型切换失败，请重试"; }
-+  finally { saving.value = false; }
+     <floatingAgent v-model="agentVisible" :inert="workspaceStore.projectLoadingVisible" @resize="agentWidth = $event" />
+     <settings v-model="settingsVisible" />
+     <el-dialog v-model="contactVisible" :title="contactInfo.title" width="min(360px, calc(100vw - 32px))" alignCenter appendToBody>
+@@ -140,6 +146,8 @@ import { QRCode } from "tdesign-vue-next";
+ import settings from "@/components/settings/index.vue";
+ import { useWorkspaceStore } from "@/stores/workspace";
+ import { registerWorkspaceControl, waitForControlValue } from "@/lib/mcpControl";
++import { isStudioEmbedded } from "@/lib/platform";
++import { requestStudioSession, sendPendingStudioPrompt, studioSessionStatus } from "@/lib/studioSession";
+ import anonymousData from "@/lib/anonymousData";
+ import { useProviderBalances } from "@/lib/providerBilling";
+ import canvasPanel from "./panels/canvas/canvasHost.vue";
+@@ -170,6 +178,15 @@ const panelOptions = [
+   { label: "文档", value: "document", icon: IconFileText },
+ ];
+ const agentVisible = ref(true);
++const legacyStudioUrl = location.origin + "/#/home";
++async function openStudioChat() {
++  try { await requestStudioSession("openChat"); }
++  catch (error) { ElMessage.error(error instanceof Error ? error.message : "dsh 会话暂不可用"); }
++}
++async function retryStudioPrompt() {
++  try { await sendPendingStudioPrompt(); }
++  catch (error) { ElMessage.error(error instanceof Error ? error.message : "发送失败，请重试"); }
++}
+ const agentWidth = ref(0);
+ const settingsVisible = ref(false);
+ const helpVisible = ref(false);
+diff --git a/apps/web/src/pages/workspace/panels/canvas/components/assetLibrary.vue b/apps/web/src/pages/workspace/panels/canvas/components/assetLibrary.vue
+index 07f688a..b1e5698 100644
+--- a/apps/web/src/pages/workspace/panels/canvas/components/assetLibrary.vue
++++ b/apps/web/src/pages/workspace/panels/canvas/components/assetLibrary.vue
+@@ -60,7 +60,7 @@
+ 
+   <el-dialog v-model="saveVisible" title="保存到素材库" width="460px" alignCenter appendToBody :closeOnClickModal="false" @opened="assetNameInput?.select()">
+     <el-form class="saveForm" labelPosition="top" @submit.prevent="saveAsset">
+-      <el-form-item label="素材名称">
++      <el-form-item label="素材名称" :error="assetNameError">
+         <el-input ref="assetNameInput" v-model="assetName" aria-label="素材名称" placeholder="输入完整文件名" :disabled="saving" @keydown.enter.prevent="saveAsset" />
+       </el-form-item>
+       <el-form-item v-if="outputs.length > 1" label="节点输出">
+@@ -75,7 +75,7 @@
+         </div>
+         <div class="locationPath" :title="saveLocationLabel">{{ saveLocationLabel }}</div>
+         <el-scrollbar class="saveFolderScroll" maxHeight="220px">
+-          <el-tree class="saveFolderTree" :data="folders" nodeKey="path" :props="{ label: 'name' }" :icon="IconChevronRight" :currentNodeKey="saveDirectory" :expandOnClickNode="false" defaultExpandAll highlightCurrent @nodeClick="(entry: AssetEntry) => { if (!saving && saveFolderName === undefined) saveDirectory = entry.path; }">
++          <el-tree class="saveFolderTree" :data="folders" nodeKey="path" :props="{ label: 'name' }" :icon="IconChevronRight" :currentNodeKey="saveDirectory" :expandOnClickNode="false" defaultExpandAll highlightCurrent @nodeClick="selectSaveFolder">
+             <template #default="{ data, node }">
+               <span class="saveFolderEntry"><component :is="node.expanded && !node.isLeaf ? IconFolderOpen : IconFolder" :size="18" aria-hidden="true" /><span>{{ data.name }}</span></span>
+             </template>
+@@ -90,7 +90,7 @@
+     </el-form>
+     <template #footer>
+       <el-button :disabled="saving" @click="saveVisible = false">取消</el-button>
+-      <el-button type="primary" :loading="saving" :disabled="!assetName.trim() || /[\\/]/.test(assetName) || saveFolderName !== undefined" @click="saveAsset">保存</el-button>
++      <el-button type="primary" :loading="saving" :disabled="!!assetNameError || saveFolderName !== undefined" @click="saveAsset">保存</el-button>
+     </template>
+   </el-dialog>
+ </template>
+@@ -125,6 +125,7 @@ const uploading = ref(false);
+ const fileInput = ref<HTMLInputElement>();
+ const folder = ref(".");
+ const assetName = ref("");
++const assetNameError = computed(() => fileNameError(assetName.value));
+ const assetNameInput = ref<InputInstance>();
+ const saveDirectory = ref(".");
+ const saveFolderName = ref<string>();
+@@ -301,6 +302,10 @@ function selectFolder(entry: AssetEntry) {
+   folder.value = folder.value === path ? "." : path;
+ }
+ 
++function selectSaveFolder(entry: AssetEntry) {
++  if (!saving.value && saveFolderName.value === undefined) saveDirectory.value = entry.path;
 +}
 +
-+function changeMode(event: Event) {
-+  const mode = (event.target as HTMLSelectElement).value;
-+  if (mode === "system") void select({ mode });
-+  else if (state.value?.modelSelection) void select({ mode: "custom", selection: state.value.modelSelection });
+ async function startSaveFolder() {
+   saveFolderName.value = "新建文件夹";
+   await nextTick();
+@@ -323,8 +328,18 @@ async function createFolder() {
+   }
+ }
+ 
++function fileNameError(value: string) {
++  const name = value.trim();
++  if (!name) return "请输入名称";
++  if (/[<>:"/\\|?*\x00-\x1f]/.test(name)) return "名称不能包含 < > : \" / \\ | ? * 或控制字符";
++  if (name.endsWith(".")) return "名称不能以点结尾";
++  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) return "名称不能使用系统保留名";
++  return "";
 +}
 +
-+function changeModel(event: Event) {
-+  const model = models.value.find(item => item.key === (event.target as HTMLSelectElement).value);
-+  if (model) void select({ mode: "custom", selection: { provider: model.provider, model: model.id, reasoningEffort: model.reasoning?.defaultEffort } });
-+}
-+
-+function changeEffort(event: Event) {
-+  if (state.value?.modelSelection) void select({ mode: "custom", selection: { ...state.value.modelSelection, reasoningEffort: (event.target as HTMLSelectElement).value } });
-+}
-+
-+async function openSettings() {
-+  try { await requestStudioSession("modelSettings"); ElMessage.info("在 dsh 设置的模型页面添加供应商或模型，保存后返回此处选择。"); }
-+  catch (cause) { error.value = cause instanceof Error ? cause.message : "无法打开模型设置"; }
-+}
-+</script>
-diff --git a/apps/web/index.html b/apps/web/index.html
-index 55e1905..dc21f05 100644
---- a/apps/web/index.html
-+++ b/apps/web/index.html
+ async function createAssetFolder(parent: string, name: string) {
+-  if (/[\\/]/.test(name)) throw new Error("文件夹名称不能包含斜杠");
++  const error = fileNameError(name);
++  if (error) throw new Error(error);
+   const path = parent === "." ? name : `${parent}/${name}`;
+   await axios.post("/api/assets/mkdir", { path });
+   return path;
+@@ -333,7 +348,9 @@ async function createAssetFolder(parent: string, name: string) {
+ async function openSave(label: string, items: AssetOutput[]) {
+   outputs.value = items;
+   selectedOutput.value = 0;
+-  assetName.value = label.endsWith(extension.value) ? label : `${label}${extension.value}`;
++  let name = label.trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[. ]+$/, "") || "素材";
++  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = `_${name}`;
++  assetName.value = name.endsWith(extension.value) ? name : `${name}${extension.value}`;
+   saveDirectory.value = folder.value;
+   saveFolderName.value = undefined;
+   sourceDirectory = props.directory;
+@@ -348,7 +365,8 @@ async function openSave(label: string, items: AssetOutput[]) {
+ async function saveAsset() {
+   const output = outputs.value[selectedOutput.value]?.output;
+   const name = assetName.value.trim();
+-  if (!output || !name || /[\\/]/.test(name) || saving.value || saveFolderName.value !== undefined) return;
++  if (!output || saving.value || saveFolderName.value !== undefined) return;
++  if (assetNameError.value) return ElMessage.error(assetNameError.value);
+   const path = saveDirectory.value === "." ? name : `${saveDirectory.value}/${name}`;
+   saving.value = true;
+   try {
+diff --git a/apps/web/src/types/components.d.ts b/apps/web/src/types/components.d.ts
+index d839381..b541543 100644
+--- a/apps/web/src/types/components.d.ts
++++ b/apps/web/src/types/components.d.ts
+@@ -136,6 +136,8 @@ declare module 'vue' {
+     SmsCodeButton: typeof import('./../components/settings/panels/account/smsCodeButton.vue')['default']
+     SubAccounts: typeof import('./../components/settings/panels/account/subAccounts.vue')['default']
+     TaskRecords: typeof import('./../components/settings/panels/account/taskRecords.vue')['default']
++    StudioConversation: typeof import('./../components/agent/studioConversation.vue')['default']
++    StudioModelPicker: typeof import('./../components/agent/studioModelPicker.vue')['default']
+     ToolMessage: typeof import('./../components/agent/toolMessage.vue')['default']
+     ToonflowProviderCard: typeof import('./../components/settings/toonflowProviderCard.vue')['default']
+     Ui: typeof import('./../components/settings/panels/general/ui.vue')['default']
+diff --git a/apps/web/vite.config.ts b/apps/web/vite.config.ts
+index d07d94b..fb283c5 100644
+--- a/apps/web/vite.config.ts
++++ b/apps/web/vite.config.ts
+@@ -4,7 +4,7 @@ import { defineConfig } from "vite";
+ import vue from "@vitejs/plugin-vue";
+ import components from "unplugin-vue-components/vite";
+ import { ElementPlusResolver } from "unplugin-vue-components/resolvers";
+-import desktopConfig from "../../electrobun.config.ts";
++import { appConfig } from "../../app.config";
+ import postcssConfig from "../../postcss.config.ts";
+ import { i18nPlugin } from "@toonflow/i18n/vite";
+ 
+@@ -13,7 +13,7 @@ const serverOrigin = `http://127.0.0.1:${process.env.TOONFLOW_SERVER_PORT || 300
+ export default defineConfig(({ command }) => ({
+   css: { postcss: postcssConfig },
+   define: {
+-    "import.meta.env.appVersion": JSON.stringify(desktopConfig.app.version),
++    "import.meta.env.appVersion": JSON.stringify(appConfig.version),
+   },
+   server: {
+     proxy: {
+diff --git a/bun.lock b/bun.lock
+index dd071ba..1ef3ba7 100644
+--- a/bun.lock
++++ b/bun.lock
 @@ -7,6 +7,7 @@
-   </head>
-   <body>
-     <div id="app"></div>
-+    <script src="/studioControl.js"></script>
-     <script type="module" src="/src/main.ts"></script>
-   </body>
- </html>
-diff --git a/apps/web/public/studioControl.js b/apps/web/public/studioControl.js
-new file mode 100644
-index 0000000..3fcbf65
---- /dev/null
-+++ b/apps/web/public/studioControl.js
-@@ -0,0 +1,194 @@
-+"use strict";
-+(() => {
-+  // D:/demo2/studio-library/packages/sdk/controlBridge.ts
-+  (() => {
-+    if (window.parent === window || window.__dshStudioControl) return;
-+    window.__dshStudioControl = true;
-+    const requestType = "dsh:studio:control";
-+    const resultType = "dsh:studio:controlResult";
-+    const controls = /* @__PURE__ */ new Map();
-+    const seen = /* @__PURE__ */ new Set();
-+    const cancelled = /* @__PURE__ */ new Set();
-+    const allowedParents = /* @__PURE__ */ new Set([location.origin, "dsh-app://app"]);
-+    const isLocal = (url) => ["http:", "https:"].includes(url.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
-+    try {
-+      const parent = new URL(document.referrer);
-+      if (isLocal(parent) && parent.port === "5173") allowedParents.add(parent.origin);
-+    } catch {
-+    }
-+    const redact = (value) => value.replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[\u51ED\u636E\u5DF2\u9690\u85CF]").replace(/\b(?:sk-[\w-]+|[a-f0-9]{24,})\b/gi, "[\u51ED\u636E\u5DF2\u9690\u85CF]").slice(0, 12e3);
-+    const visible = (node) => {
-+      if (node.closest('[hidden],[inert],[aria-hidden="true"]')) return false;
-+      if (getComputedStyle(node).pointerEvents === "none") return false;
-+      for (let item = node; item; item = item.parentElement) {
-+        const style = getComputedStyle(item);
-+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
-+      }
-+      return node.getClientRects().length > 0;
-+    };
-+    const label = (node) => {
-+      const labelled = node.getAttribute("aria-labelledby")?.split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
-+      const field = node;
-+      return (node.getAttribute("aria-label") || labelled || field.labels?.[0]?.textContent || node.getAttribute("placeholder") || node.getAttribute("title") || node.innerText || node.textContent || field.name || "").trim().replace(/\s+/g, " ").slice(0, 180);
-+    };
-+    const sensitive = (node) => node.matches('input[type="password"],input[type="file"]') || /密码|密钥|令牌|secret|token|api.?key|password/i.test(label(node) + " " + node.name + " " + node.id);
-+    let generation = 0;
-+    const pageId = crypto.randomUUID().slice(0, 8);
-+    function snapshot(offset = 0) {
-+      controls.clear();
-+      generation += 1;
-+      const nodes = [...document.querySelectorAll('button,a[href],input:not([type="hidden"]),textarea,select,summary,[role="button"],[role="tab"],[role="checkbox"],[contenteditable="true"],[tabindex]')].filter(visible);
-+      const entries = nodes.slice(offset, offset + 100).map((node, index) => {
-+        const id = pageId + "-c" + generation + "-" + (offset + index);
-+        controls.set(id, node);
-+        const input = node;
-+        const secret = sensitive(node);
-+        return {
-+          id,
-+          tag: node.tagName.toLowerCase(),
-+          label: redact(label(node)),
-+          type: input.type || node.getAttribute("role") || void 0,
-+          disabled: node.matches(':disabled,[aria-disabled="true"]'),
-+          sensitive: secret || void 0,
-+          value: !secret && node.matches("input,textarea,select") ? redact(input.value) : void 0,
-+          checked: node.matches('input[type="checkbox"],input[type="radio"]') ? input.checked : void 0,
-+          selected: node.getAttribute("aria-pressed") ?? node.getAttribute("aria-selected") ?? (node.classList.contains("is-active") ? "true" : void 0),
-+          options: node instanceof HTMLSelectElement ? [...node.options].slice(0, 80).map((option) => ({ value: option.value, label: redact(option.text), disabled: option.disabled })) : void 0
-+        };
-+      });
-+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-+      const text = [];
-+      let length = 0;
-+      while (walker.nextNode() && length < 12e3) {
-+        const parent = walker.currentNode.parentElement;
-+        if (!parent || parent.closest("script,style,noscript,input,textarea,[data-sensitive]") || !visible(parent)) continue;
-+        const value = walker.currentNode.textContent?.trim();
-+        if (value) {
-+          text.push(value);
-+          length += value.length;
-+        }
-+      }
-+      const result = { title: document.title, path: location.pathname, text: redact(text.join("\n")), controls: entries, totalControls: nodes.length, nextOffset: offset + entries.length < nodes.length ? offset + entries.length : null };
-+      while (JSON.stringify(result).length > 48e3 && entries.length > 1) entries.pop();
-+      result.nextOffset = offset + entries.length < nodes.length ? offset + entries.length : null;
-+      return result;
-+    }
-+    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-+    async function perform(command) {
-+      if (command.action === "open" || command.action === "read") return snapshot(command.offset ?? 0);
-+      const node = command.target ? controls.get(command.target) : void 0;
-+      if (command.target && (!node?.isConnected || !visible(node))) throw new Error("\u9875\u9762\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0 read \u83B7\u53D6\u63A7\u4EF6");
-+      if (node?.matches(':disabled,[aria-disabled="true"]')) throw new Error("\u63A7\u4EF6\u5F53\u524D\u4E0D\u53EF\u7528");
-+      if (node && sensitive(node)) throw new Error("\u654F\u611F\u8BBE\u7F6E\u8BF7\u7531\u7528\u6237\u5728\u9875\u9762\u4E2D\u64CD\u4F5C");
-+      if (command.action === "scroll") {
-+        const horizontal = ["left", "right"].includes(command.direction);
-+        let container = node ?? document.elementFromPoint(innerWidth / 2, innerHeight / 2);
-+        while (container && !(horizontal ? container.scrollWidth > container.clientWidth : container.scrollHeight > container.clientHeight)) container = container.parentElement;
-+        container ??= document.scrollingElement;
-+        const amount = ["up", "left"].includes(command.direction) ? -480 : 480;
-+        container.scrollBy({ [horizontal ? "left" : "top"]: amount, behavior: "instant" });
-+      } else {
-+        if (!node) throw new Error("\u8BF7\u63D0\u4F9B\u6700\u8FD1 read \u8FD4\u56DE\u7684\u63A7\u4EF6 id");
-+        node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
-+        node.focus({ preventScroll: true });
-+        if (command.action === "click") {
-+          if (node instanceof HTMLAnchorElement && !["http:", "https:", "dsh-app:"].includes(new URL(node.href).protocol)) throw new Error("\u4E0D\u652F\u6301\u6B64\u94FE\u63A5\u7C7B\u578B");
-+          node.click();
-+        } else if (command.action === "fill") {
-+          if (typeof command.value !== "string" || command.value.length > 8e3) throw new Error("\u8F93\u5165\u5185\u5BB9\u65E0\u6548");
-+          if (node.matches('input:not([type="checkbox"]):not([type="radio"]),textarea') && !node.readOnly) {
-+            const prototype = node instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-+            Object.getOwnPropertyDescriptor(prototype, "value").set.call(node, command.value);
-+            node.dispatchEvent(new Event("input", { bubbles: true }));
-+            node.dispatchEvent(new Event("change", { bubbles: true }));
-+          } else if (node.isContentEditable) {
-+            node.textContent = command.value;
-+            node.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: command.value }));
-+          } else throw new Error("\u8BE5\u63A7\u4EF6\u4E0D\u80FD\u586B\u5199\uFF0C\u8BF7\u4F7F\u7528 click \u6216 select");
-+        } else if (command.action === "select" && node instanceof HTMLSelectElement) {
-+          if (![...node.options].some((option) => option.value === command.value && !option.disabled)) throw new Error("\u9009\u9879\u4E0D\u5B58\u5728\u6216\u4E0D\u53EF\u7528");
-+          Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(node, command.value);
-+          node.dispatchEvent(new Event("input", { bubbles: true }));
-+          node.dispatchEvent(new Event("change", { bubbles: true }));
-+        } else throw new Error("\u4E0D\u652F\u6301\u6B64\u63A7\u4EF6\u64CD\u4F5C");
-+      }
-+      await delay(250);
-+      return snapshot();
-+    }
-+    let busy = false;
-+    window.addEventListener("message", async (event) => {
-+      const data = event.data;
-+      if (event.source !== window.parent || !allowedParents.has(event.origin) || ![requestType, "dsh:studio:controlCancel"].includes(data?.type) || typeof data.id !== "string" || !/^[a-f0-9-]{36}$/.test(data.id)) return;
-+      if (data.type === "dsh:studio:controlCancel") {
-+        if (cancelled.size >= 128) cancelled.delete(cancelled.values().next().value);
-+        cancelled.add(data.id);
-+        const frame = document.querySelector("iframe[data-studio-app]");
-+        if (frame && isLocal(new URL(frame.src))) frame.contentWindow?.postMessage(data, new URL(frame.src).origin);
-+        return;
-+      }
-+      const reply = (body) => window.parent.postMessage({ type: resultType, id: data.id, ...body }, event.origin);
-+      if (data.action === "ping") {
-+        reply({ ready: true });
-+        return;
-+      }
-+      if (seen.has(data.id)) {
-+        reply({ error: "\u64CD\u4F5C\u5DF2\u63A5\u6536\uFF0C\u8BF7\u91CD\u65B0\u8BFB\u53D6\u9875\u9762\uFF0C\u4E0D\u8981\u91CD\u590D\u63D0\u4EA4" });
-+        return;
-+      }
-+      if (busy) {
-+        reply({ error: "\u9875\u9762\u6B63\u5728\u6267\u884C\u53E6\u4E00\u4E2A\u64CD\u4F5C" });
-+        return;
-+      }
-+      if (cancelled.has(data.id) || !Number.isFinite(data.expiresAt) || data.expiresAt < Date.now()) {
-+        reply({ error: "\u64CD\u4F5C\u5DF2\u53D6\u6D88\u6216\u8FC7\u671F" });
-+        return;
-+      }
-+      if (seen.size >= 128) seen.delete(seen.values().next().value);
-+      seen.add(data.id);
-+      busy = true;
-+      try {
-+        const deadline = Math.min(data.expiresAt - 1e3, Date.now() + 1e4);
-+        const loading = () => document.readyState === "loading" || document.querySelector('[data-studio-loading="true"]') || [...document.querySelectorAll("#root,#app")].some((root) => !root.children.length);
-+        while (loading() && Date.now() < deadline && !cancelled.has(data.id)) await delay(100);
-+        if (cancelled.has(data.id) || data.expiresAt < Date.now()) throw new Error("\u64CD\u4F5C\u5DF2\u53D6\u6D88\u6216\u8FC7\u671F");
-+        if (loading()) throw new Error("\u9875\u9762\u4ECD\u5728\u52A0\u8F7D\uFF0C\u8BF7\u7A0D\u540E\u91CD\u65B0 read");
-+        const child = document.querySelector("iframe[data-studio-app]");
-+        if (child) {
-+          const origin = new URL(child.src, location.href).origin;
-+          if (!isLocal(new URL(origin))) throw new Error("\u5DE5\u4F5C\u5BA4\u63A7\u5236\u4EC5\u652F\u6301\u672C\u673A\u5E94\u7528");
-+          const forwarded = await new Promise((resolve, reject) => {
-+            let sent = false;
-+            const finish = (error, result) => {
-+              clearInterval(probe);
-+              clearTimeout(timer);
-+              window.removeEventListener("message", receive);
-+              error ? reject(error) : resolve(result);
-+            };
-+            const receive = (message) => {
-+              if (message.source !== child.contentWindow || message.origin !== origin || message.data?.type !== resultType || message.data.id !== data.id) return;
-+              if (message.data.ready && !sent) {
-+                if (cancelled.has(data.id) || data.expiresAt < Date.now()) {
-+                  finish(new Error("\u64CD\u4F5C\u5DF2\u53D6\u6D88\u6216\u8FC7\u671F"));
-+                  return;
-+                }
-+                sent = true;
-+                clearInterval(probe);
-+                child.contentWindow?.postMessage(data, origin);
-+              } else if (sent && !message.data.ready) finish(void 0, message.data);
-+            };
-+            window.addEventListener("message", receive);
-+            const ping = () => child.contentWindow?.postMessage({ ...data, action: "ping" }, origin);
-+            const probe = setInterval(ping, 150);
-+            const timer = setTimeout(() => finish(new Error(sent ? "\u5E94\u7528\u54CD\u5E94\u8D85\u65F6\uFF0C\u8BF7\u91CD\u65B0\u8BFB\u53D6\u9875\u9762\u786E\u8BA4\u7ED3\u679C" : "\u5E94\u7528\u5C1A\u672A\u5C31\u7EEA\u6216\u672A\u5B89\u88C5\u63A7\u5236\u6865")), Math.max(1, Math.min(18e3, data.expiresAt - Date.now())));
-+            ping();
-+          });
-+          window.parent.postMessage(forwarded, event.origin);
-+        } else reply({ result: await perform(data) });
-+      } catch (error) {
-+        reply({ error: error instanceof Error ? error.message : "\u5DE5\u4F5C\u5BA4\u64CD\u4F5C\u5931\u8D25" });
-+      } finally {
-+        busy = false;
-+      }
-+    });
-+  })();
-+})();
+       "devDependencies": {
+         "@toonflow/file": "workspace:*",
+         "@types/bun": "^1.4.2",
++        "@types/node": "26.5.0",
+         "@types/postcss-pxtorem": "^6.1.0",
+         "postcss": "^8.5.28",
+         "postcss-pxtorem": "^6.1.0",
+@@ -1890,7 +1891,7 @@
+ 
+     "atomically": ["atomically@2.1.1", "https://registry.npmmirror.com/atomically/-/atomically-2.1.1.tgz", { "dependencies": { "stubborn-fs": "^2.0.0", "when-exit": "^2.1.4" } }, "sha512-P4w9o2dqARji6P7MHprklbfiArZAWvo07yW7qs3pdljb3BWr12FIB7W+p0zJiuiVsUpRO0iZn1kFFcpPegg0tQ=="],
+ 
+-    "aws-ssl-profiles": ["aws-ssl-profiles@1.1.2", "", {}, "sha512-NZKeq9AfyQvEeNlN0zSYAaWrmBffJh3IELMZfRpJVWgrpEbtEpnjvzqBPf+mxoI287JohRDoa+/nsfqqiZmF6g=="],
++    "aws-ssl-profiles": ["aws-ssl-profiles@1.1.2", "https://registry.npmjs.com/aws-ssl-profiles/-/aws-ssl-profiles-1.1.2.tgz", {}, "sha512-NZKeq9AfyQvEeNlN0zSYAaWrmBffJh3IELMZfRpJVWgrpEbtEpnjvzqBPf+mxoI287JohRDoa+/nsfqqiZmF6g=="],
+ 
+     "axios": ["axios@1.20.0", "http://registry.npm.taobao.org/axios/-/axios-1.20.0.tgz", { "dependencies": { "follow-redirects": "^1.16.0", "form-data": "^4.0.6", "https-proxy-agent": "^5.0.1", "proxy-from-env": "^2.1.0" } }, "sha512-r8aOh8j9cGKpgQAqpzrUHnSIc6a59Y3Xf/cv8sy1DrHCkZHzQGEuoq1tARk6qSyDdtQGSDgpb9kFlruzPvrgwg=="],
+ 
+@@ -2124,7 +2125,7 @@
+ 
+     "dot-prop": ["dot-prop@10.2.0", "https://registry.npmmirror.com/dot-prop/-/dot-prop-10.2.0.tgz", { "dependencies": { "type-fest": "^5.0.0" } }, "sha512-BTJ9aZYL3vCfZlZOBLy9v8TUqWGQ0pzFnygKwFZt5udj6viBoFIBviKPUoZLDCPn1FoXffv6McQFDenrm5Krfw=="],
+ 
+-    "drizzle-orm": ["drizzle-orm@0.45.4", "", { "peerDependencies": { "@aws-sdk/client-rds-data": ">=3", "@cloudflare/workers-types": ">=4", "@electric-sql/pglite": ">=0.2.0", "@libsql/client": ">=0.10.0", "@libsql/client-wasm": ">=0.10.0", "@neondatabase/serverless": ">=0.10.0", "@netlify/db": ">=0.4.0", "@op-engineering/op-sqlite": ">=2", "@opentelemetry/api": "^1.4.1", "@planetscale/database": ">=1.13", "@prisma/client": "*", "@tidbcloud/serverless": "*", "@types/better-sqlite3": "*", "@types/pg": "*", "@types/sql.js": "*", "@upstash/redis": ">=1.34.7", "@vercel/postgres": ">=0.8.0", "@xata.io/client": "*", "better-sqlite3": ">=7", "bun-types": "*", "expo-sqlite": ">=14.0.0", "gel": ">=2", "knex": "*", "kysely": "*", "mysql2": ">=2", "pg": ">=8", "postgres": ">=3", "prisma": "*", "sql.js": ">=1", "sqlite3": ">=5" }, "optionalPeers": ["@aws-sdk/client-rds-data", "@cloudflare/workers-types", "@electric-sql/pglite", "@libsql/client", "@libsql/client-wasm", "@neondatabase/serverless", "@netlify/db", "@op-engineering/op-sqlite", "@opentelemetry/api", "@planetscale/database", "@prisma/client", "@tidbcloud/serverless", "@types/better-sqlite3", "@types/pg", "@types/sql.js", "@upstash/redis", "@vercel/postgres", "@xata.io/client", "better-sqlite3", "bun-types", "expo-sqlite", "gel", "knex", "kysely", "mysql2", "pg", "postgres", "prisma", "sql.js", "sqlite3"] }, "sha512-NiM1YZpJ2UxyeE67DpDDZ+Tsw4YLX3trSlkNT7Tm9eKoUNb1LvaAaQzXgYQsWs+AQ9TUmmwMmBOCXuqqxUWKKQ=="],
++    "drizzle-orm": ["drizzle-orm@0.45.4", "https://registry.npmjs.com/drizzle-orm/-/drizzle-orm-0.45.4.tgz", { "peerDependencies": { "@aws-sdk/client-rds-data": ">=3", "@cloudflare/workers-types": ">=4", "@electric-sql/pglite": ">=0.2.0", "@libsql/client": ">=0.10.0", "@libsql/client-wasm": ">=0.10.0", "@neondatabase/serverless": ">=0.10.0", "@netlify/db": ">=0.4.0", "@op-engineering/op-sqlite": ">=2", "@opentelemetry/api": "^1.4.1", "@planetscale/database": ">=1.13", "@prisma/client": "*", "@tidbcloud/serverless": "*", "@types/better-sqlite3": "*", "@types/pg": "*", "@types/sql.js": "*", "@upstash/redis": ">=1.34.7", "@vercel/postgres": ">=0.8.0", "@xata.io/client": "*", "better-sqlite3": ">=7", "bun-types": "*", "expo-sqlite": ">=14.0.0", "gel": ">=2", "knex": "*", "kysely": "*", "mysql2": ">=2", "pg": ">=8", "postgres": ">=3", "prisma": "*", "sql.js": ">=1", "sqlite3": ">=5" }, "optionalPeers": ["@aws-sdk/client-rds-data", "@cloudflare/workers-types", "@electric-sql/pglite", "@libsql/client", "@libsql/client-wasm", "@neondatabase/serverless", "@netlify/db", "@op-engineering/op-sqlite", "@opentelemetry/api", "@planetscale/database", "@prisma/client", "@tidbcloud/serverless", "@types/better-sqlite3", "@types/pg", "@types/sql.js", "@upstash/redis", "@vercel/postgres", "@xata.io/client", "better-sqlite3", "bun-types", "expo-sqlite", "gel", "knex", "kysely", "mysql2", "pg", "postgres", "prisma", "sql.js", "sqlite3"] }, "sha512-NiM1YZpJ2UxyeE67DpDDZ+Tsw4YLX3trSlkNT7Tm9eKoUNb1LvaAaQzXgYQsWs+AQ9TUmmwMmBOCXuqqxUWKKQ=="],
+ 
+     "duck-duck-scrape": ["duck-duck-scrape@2.2.7", "https://registry.npmmirror.com/duck-duck-scrape/-/duck-duck-scrape-2.2.7.tgz", { "dependencies": { "html-entities": "^2.3.3", "needle": "^3.2.0" } }, "sha512-BEcglwnfx5puJl90KQfX+Q2q5vCguqyMpZcSRPBWk8OY55qWwV93+E+7DbIkrGDW4qkqPfUvtOUdi0lXz6lEMQ=="],
+ 
+@@ -2132,11 +2133,11 @@
+ 
+     "ecdsa-sig-formatter": ["ecdsa-sig-formatter@1.0.11", "https://registry.npmmirror.com/ecdsa-sig-formatter/-/ecdsa-sig-formatter-1.0.11.tgz", { "dependencies": { "safe-buffer": "^5.0.1" } }, "sha512-nagl3RYrbNv6kQkeJIpt6NJZy8twLB/2vtz6yN9Z4vRKHN4/QZJIEbqohALSgwKdnksuY3k5Addp5lg8sVoVcQ=="],
+ 
+-    "echarts": ["echarts@6.1.0", "", { "dependencies": { "tslib": "2.3.0", "zrender": "6.1.0" } }, "sha512-q0yaFPggC9FUdsWH4blavRWFmxdrIodbkoKNAjJudAI6CA9gNPxHtV2RcZNEepZVlk4yvBYkOkbk6HIVpIyHZA=="],
++    "echarts": ["echarts@6.1.0", "https://registry.npmjs.com/echarts/-/echarts-6.1.0.tgz", { "dependencies": { "tslib": "2.3.0", "zrender": "6.1.0" } }, "sha512-q0yaFPggC9FUdsWH4blavRWFmxdrIodbkoKNAjJudAI6CA9gNPxHtV2RcZNEepZVlk4yvBYkOkbk6HIVpIyHZA=="],
+ 
+     "ee-first": ["ee-first@1.1.1", "https://registry.npmmirror.com/ee-first/-/ee-first-1.1.1.tgz", {}, "sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow=="],
+ 
+-    "electrobun": ["electrobun@2.0.5", "", { "bin": { "electrobun": "bin/electrobun.cjs" } }, "sha512-/4Vp0p6LgdD7bySSblnoqM0rtcQT5uYsGeqZPhsOESeSxMGeiKsfQkBjNwMnjFI5z4StJKXfs386ay2mpif1BA=="],
++    "electrobun": ["electrobun@2.0.5", "https://registry.npmjs.com/electrobun/-/electrobun-2.0.5.tgz", { "bin": { "electrobun": "bin/electrobun.cjs" } }, "sha512-/4Vp0p6LgdD7bySSblnoqM0rtcQT5uYsGeqZPhsOESeSxMGeiKsfQkBjNwMnjFI5z4StJKXfs386ay2mpif1BA=="],
+ 
+     "element-plus": ["element-plus@2.14.5", "https://registry.npmmirror.com/element-plus/-/element-plus-2.14.5.tgz", { "dependencies": { "@ctrl/tinycolor": "^4.2.0", "@element-plus/icons-vue": "^2.3.2", "@floating-ui/dom": "^1.8.0", "@popperjs/core": "npm:@sxzz/popperjs-es@^2.11.8", "@types/lodash": "^4.17.24", "@types/lodash-es": "^4.17.12", "@vueuse/core": "14.4.0", "async-validator": "^4.2.5", "dayjs": "^1.11.20", "lodash": "^4.18.1", "lodash-es": "^4.18.1", "lodash-unified": "^1.0.3", "memoize-one": "^6.0.0", "normalize-wheel-es": "^1.2.0", "vue-component-type-helpers": "^3.3.9" }, "peerDependencies": { "vue": "^3.3.7" } }, "sha512-bghYy/S+qg87enHPXELirhEdDqsVAUGcGpbGIeG8dz0kwpIkGz7gYsifulBshXX74iRtHib85XWQj0uSH2A1Yg=="],
+ 
+@@ -2246,7 +2247,7 @@
+ 
+     "gcp-metadata": ["gcp-metadata@8.1.2", "https://registry.npmmirror.com/gcp-metadata/-/gcp-metadata-8.1.2.tgz", { "dependencies": { "gaxios": "^7.0.0", "google-logging-utils": "^1.0.0", "json-bigint": "^1.0.0" } }, "sha512-zV/5HKTfCeKWnxG0Dmrw51hEWFGfcF2xiXqcA3+J90WDuP0SvoiSO5ORvcBsifmx/FoIjgQN3oNOGaQ5PhLFkg=="],
+ 
+-    "generate-function": ["generate-function@2.3.1", "", { "dependencies": { "is-property": "^1.0.2" } }, "sha512-eeB5GfMNeevm/GRYq20ShmsaGcmI81kIX2K9XQx5miC8KdHaC6Jm0qQ8ZNeGOi7wYB8OsdxKs+Y2oVuTFuVwKQ=="],
++    "generate-function": ["generate-function@2.3.1", "https://registry.npmjs.com/generate-function/-/generate-function-2.3.1.tgz", { "dependencies": { "is-property": "^1.0.2" } }, "sha512-eeB5GfMNeevm/GRYq20ShmsaGcmI81kIX2K9XQx5miC8KdHaC6Jm0qQ8ZNeGOi7wYB8OsdxKs+Y2oVuTFuVwKQ=="],
+ 
+     "get-caller-file": ["get-caller-file@2.0.5", "https://registry.npmmirror.com/get-caller-file/-/get-caller-file-2.0.5.tgz", {}, "sha512-DyFP3BM/3YHTQOCUL/w0OZHR0lpKeGrxotcHWcqNEdnltqFwXVfhEBQ94eIo34AfQpo0rGki4cyIiftY06h2Fg=="],
+ 
+@@ -2344,7 +2345,7 @@
+ 
+     "is-promise": ["is-promise@4.0.0", "https://registry.npmmirror.com/is-promise/-/is-promise-4.0.0.tgz", {}, "sha512-hvpoI6korhJMnej285dSg6nu1+e6uxs7zG3BYAm5byqDsgJNWwxzM6z6iZiAgQR4TJ30JmBTOwqZUw3WlyH3AQ=="],
+ 
+-    "is-property": ["is-property@1.0.2", "", {}, "sha512-Ks/IoX00TtClbGQr4TWXemAnktAQvYB7HzcCxDGqEZU6oCmb2INHuOoKxbtR+HFkmYWBKv/dOZtGRiAjDhj92g=="],
++    "is-property": ["is-property@1.0.2", "https://registry.npmjs.com/is-property/-/is-property-1.0.2.tgz", {}, "sha512-Ks/IoX00TtClbGQr4TWXemAnktAQvYB7HzcCxDGqEZU6oCmb2INHuOoKxbtR+HFkmYWBKv/dOZtGRiAjDhj92g=="],
+ 
+     "is-unsafe": ["is-unsafe@2.0.2", "https://registry.npmmirror.com/is-unsafe/-/is-unsafe-2.0.2.tgz", {}, "sha512-HgbIHPBH0KHHCcjLfGsCvhtPTVxjaAZlXjwdz7/GQC40SjSe4sfQsar8J5VFo8JOSbarkpV0OLG95bbaNd9aAQ=="],
+ 
+@@ -2422,7 +2423,7 @@
+ 
+     "lru-cache": ["lru-cache@11.5.2", "https://registry.npmmirror.com/lru-cache/-/lru-cache-11.5.2.tgz", {}, "sha512-4pfM1Ff0x50o0tQwb5ucw/RzNyD0/YJME6IVcStalZuMWxdt3sR3huStTtxz4PUmvZfRguvDejasvQ2kifR11g=="],
+ 
+-    "lru.min": ["lru.min@1.1.5", "", {}, "sha512-5J9ysMYUpYIg9RF2vJpy9SinEmSviFSe0GyPpCQ4L5QSkLAgeLXlTAOu2ZwWUU5m+0SBl6gUU1R1ZQB3aKypfA=="],
++    "lru.min": ["lru.min@1.1.5", "https://registry.npmjs.com/lru.min/-/lru.min-1.1.5.tgz", {}, "sha512-5J9ysMYUpYIg9RF2vJpy9SinEmSviFSe0GyPpCQ4L5QSkLAgeLXlTAOu2ZwWUU5m+0SBl6gUU1R1ZQB3aKypfA=="],
+ 
+     "magic-string": ["magic-string@0.30.21", "https://registry.npmmirror.com/magic-string/-/magic-string-0.30.21.tgz", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.5" } }, "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ=="],
+ 
+@@ -2570,9 +2571,9 @@
+ 
+     "muggle-string": ["muggle-string@0.4.1", "https://registry.npmmirror.com/muggle-string/-/muggle-string-0.4.1.tgz", {}, "sha512-VNTrAak/KhO2i8dqqnqnAHOa3cYBwXEZe9h+D5h/1ZqFSTEFHdM65lR7RoIqq3tBBYavsOXV84NoHXZ0AkPyqQ=="],
+ 
+-    "mysql2": ["mysql2@3.24.6", "", { "dependencies": { "aws-ssl-profiles": "^1.1.2", "generate-function": "^2.3.1", "iconv-lite": "^0.7.3", "long": "^5.3.2", "lru.min": "^1.1.4", "named-placeholders": "^1.1.6", "sql-escaper": "^1.5.1" }, "peerDependencies": { "@types/node": ">= 8" } }, "sha512-enu73KhbAua2L3dIxjc6qg6ZJ7H3pt1BImZASWNWY5xSsmJ1ZuUPULTDGXgmJbI61vb+nJAG19IZclIq19UidQ=="],
++    "mysql2": ["mysql2@3.24.6", "https://registry.npmjs.com/mysql2/-/mysql2-3.24.6.tgz", { "dependencies": { "aws-ssl-profiles": "^1.1.2", "generate-function": "^2.3.1", "iconv-lite": "^0.7.3", "long": "^5.3.2", "lru.min": "^1.1.4", "named-placeholders": "^1.1.6", "sql-escaper": "^1.5.1" }, "peerDependencies": { "@types/node": ">= 8" } }, "sha512-enu73KhbAua2L3dIxjc6qg6ZJ7H3pt1BImZASWNWY5xSsmJ1ZuUPULTDGXgmJbI61vb+nJAG19IZclIq19UidQ=="],
+ 
+-    "named-placeholders": ["named-placeholders@1.1.6", "", { "dependencies": { "lru.min": "^1.1.0" } }, "sha512-Tz09sEL2EEuv5fFowm419c1+a/jSMiBjI9gHxVLrVdbUkkNUUfjsVYs9pVZu5oCon/kmRh9TfLEObFtkVxmY0w=="],
++    "named-placeholders": ["named-placeholders@1.1.6", "https://registry.npmjs.com/named-placeholders/-/named-placeholders-1.1.6.tgz", { "dependencies": { "lru.min": "^1.1.0" } }, "sha512-Tz09sEL2EEuv5fFowm419c1+a/jSMiBjI9gHxVLrVdbUkkNUUfjsVYs9pVZu5oCon/kmRh9TfLEObFtkVxmY0w=="],
+ 
+     "nanoid": ["nanoid@3.3.18", "https://registry.npmmirror.com/nanoid/-/nanoid-3.3.18.tgz", { "bin": { "nanoid": "bin/nanoid.cjs" } }, "sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w=="],
+ 
+@@ -2832,7 +2833,7 @@
+ 
+     "sprintf-js": ["sprintf-js@1.1.3", "https://registry.npmmirror.com/sprintf-js/-/sprintf-js-1.1.3.tgz", {}, "sha512-Oo+0REFV59/rz3gfJNKQiBlwfHaSESl1pcGyABQsnnIfWOFt6JNj5gCog2U6MLZ//IGYD+nA8nI+mTShREReaA=="],
+ 
+-    "sql-escaper": ["sql-escaper@1.5.2", "", {}, "sha512-6CKD38c31SENivxOADeMNLdukOnUxUcflKtzVWzace7Riv1v7cAEym5Cx9Q7gYZ3ezIJI7ZpqecQq8cqNeSSFg=="],
++    "sql-escaper": ["sql-escaper@1.5.2", "https://registry.npmjs.com/sql-escaper/-/sql-escaper-1.5.2.tgz", {}, "sha512-6CKD38c31SENivxOADeMNLdukOnUxUcflKtzVWzace7Riv1v7cAEym5Cx9Q7gYZ3ezIJI7ZpqecQq8cqNeSSFg=="],
+ 
+     "sql.js": ["sql.js@1.15.1", "https://registry.npmmirror.com/sql.js/-/sql.js-1.15.1.tgz", {}, "sha512-i0M/6s+lcl67Flm/1m8/AeVU5caDramlILXU/udUwpTQym2qKMSe2sJiXB5d5WXFB272aj4B2v1JbtQ93ID3Pg=="],
+ 
+@@ -3054,7 +3055,7 @@
+ 
+     "zod": ["zod@4.6.2", "https://registry.npmmirror.com/zod/-/zod-4.6.2.tgz", {}, "sha512-lh5RCAGFa1Cm2hjtNwLQhSs/AsqdWnTQaBER9fEwN/88pSh7KOtJavtBx/0VlkN/uFd61SwYmljLMDAsHlvzBQ=="],
+ 
+-    "zrender": ["zrender@6.1.0", "", { "dependencies": { "tslib": "2.3.0" } }, "sha512-oEGMDB6pOP2S6OwRR4PdVv610zrjnA3Bh+JnSG12fYJlBKjtNAoEb5fSUoCOOINlH96I2fU38/A2UpRKs67xYQ=="],
++    "zrender": ["zrender@6.1.0", "https://registry.npmjs.com/zrender/-/zrender-6.1.0.tgz", { "dependencies": { "tslib": "2.3.0" } }, "sha512-oEGMDB6pOP2S6OwRR4PdVv610zrjnA3Bh+JnSG12fYJlBKjtNAoEb5fSUoCOOINlH96I2fU38/A2UpRKs67xYQ=="],
+ 
+     "zwitch": ["zwitch@2.0.4", "https://registry.npmmirror.com/zwitch/-/zwitch-2.0.4.tgz", {}, "sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A=="],
+ 
+@@ -3166,7 +3167,7 @@
+ 
+     "dom-serializer/entities": ["entities@4.5.0", "https://registry.npmmirror.com/entities/-/entities-4.5.0.tgz", {}, "sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw=="],
+ 
+-    "echarts/tslib": ["tslib@2.3.0", "", {}, "sha512-N82ooyxVNm6h1riLCoyS9e3fuJ3AMG2zIZs2Gd1ATcSFjSA23Q0fzjjZeh0jbJvWVDZ0cJT8yaNNaaXHzueNjg=="],
++    "echarts/tslib": ["tslib@2.3.0", "https://registry.npmjs.com/tslib/-/tslib-2.3.0.tgz", {}, "sha512-N82ooyxVNm6h1riLCoyS9e3fuJ3AMG2zIZs2Gd1ATcSFjSA23Q0fzjjZeh0jbJvWVDZ0cJT8yaNNaaXHzueNjg=="],
+ 
+     "form-data/mime-types": ["mime-types@2.1.35", "http://registry.npm.taobao.org/mime-types/-/mime-types-2.1.35.tgz", { "dependencies": { "mime-db": "1.52.0" } }, "sha512-ZDY+bPm5zTTF+YpCrAU9nK0UgICYPT0QtT1NZWFv4s++TNkcgVaT0g6+4R2uI4MjQjzysHB1zxuWL50hzaeXiw=="],
+ 
+@@ -3218,7 +3219,7 @@
+ 
+     "wrap-ansi/string-width": ["string-width@7.2.0", "https://registry.npmmirror.com/string-width/-/string-width-7.2.0.tgz", { "dependencies": { "emoji-regex": "^10.3.0", "get-east-asian-width": "^1.0.0", "strip-ansi": "^7.1.0" } }, "sha512-tsaTIkKW9b4N+AEj+SVA+WhJzV7/zMhcSu78mLKWSk7cXMOSHsBKFWUs0fWwq8QyK3MgJBQRX6Gbi4kYbdvGkQ=="],
+ 
+-    "zrender/tslib": ["tslib@2.3.0", "", {}, "sha512-N82ooyxVNm6h1riLCoyS9e3fuJ3AMG2zIZs2Gd1ATcSFjSA23Q0fzjjZeh0jbJvWVDZ0cJT8yaNNaaXHzueNjg=="],
++    "zrender/tslib": ["tslib@2.3.0", "https://registry.npmjs.com/tslib/-/tslib-2.3.0.tgz", {}, "sha512-N82ooyxVNm6h1riLCoyS9e3fuJ3AMG2zIZs2Gd1ATcSFjSA23Q0fzjjZeh0jbJvWVDZ0cJT8yaNNaaXHzueNjg=="],
+ 
+     "@vue-flow/core/@vueuse/core/@types/web-bluetooth": ["@types/web-bluetooth@0.0.20", "https://registry.npmmirror.com/@types/web-bluetooth/-/web-bluetooth-0.0.20.tgz", {}, "sha512-g9gZnnXVq7gM7v3tJCWV/qw7w+KeOlSHAhgF9RytFyifW6AF61hdT2ucrYhPq9hLs5JIryeupHV3qGk95dH9ow=="],
+ 
+diff --git a/electrobun.config.ts b/electrobun.config.ts
+index 2deeb39..e0d697e 100644
+--- a/electrobun.config.ts
++++ b/electrobun.config.ts
+@@ -1,3 +1,4 @@
++import { appConfig } from "./app.config";
+ import type { ElectrobunConfig } from "./.hutch/devkit/api/config/ElectrobunConfig";
+ import { fileURLToPath } from "node:url";
+ 
+@@ -8,12 +9,7 @@ export const desktopTarget = process.platform === "darwin" ? (process.arch === "
+   : process.arch === "arm64" ? "windowsArm64" : "";
+ 
+ export default {
+-  app: {
+-    name: "toonflow",
+-    identifier: "local.toonflow.desktop",
+-    version: process.env.appVersion ?? "2.0.0",
+-    urlSchemes: ["toonflow"],
+-  },
++  app: appConfig,
+   build: {
+     mainProcess: "bun",
+     // ACT: Photon、anydoc 与沙盒依赖保留运行时目录，避免 WASM/Worker 引用构建机路径。
+diff --git a/package.json b/package.json
+index f4106e7..16e63d6 100644
+--- a/package.json
++++ b/package.json
+@@ -54,6 +54,7 @@
+   "devDependencies": {
+     "@toonflow/file": "workspace:*",
+     "@types/bun": "^1.4.2",
++    "@types/node": "26.5.0",
+     "@types/postcss-pxtorem": "^6.1.0",
+     "postcss": "^8.5.28",
+     "postcss-pxtorem": "^6.1.0",

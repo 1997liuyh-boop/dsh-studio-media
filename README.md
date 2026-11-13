@@ -23,21 +23,32 @@ Install the control bundle, then this exact studio tag through the official Desk
 
 ```powershell
 & "<Desktop install directory>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "github:1997liuyh-boop/dsh-studio-library#v0.1.3"
-& "<Desktop install directory>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "github:1997liuyh-boop/dsh-studio-media#v0.2.5"
+& "<Desktop install directory>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "github:1997liuyh-boop/dsh-studio-media#v0.3.0"
 & "<Desktop install directory>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop list
 ```
 
-Verify `main: lib/index.js`, `exports./client: lib/client.js`, `dsh.bundle.patch: ./cordis.patch.yml` and the built `static` entry. Configure the Toonflow service, database, model provider and storage separately, then restart Desktop.
+Verify `main: lib/index.js`, `exports./client: lib/client.js`, `dsh.bundle.patch: ./cordis.patch.yml`, the built `static` entry and `app/build` (the Toonflow service and web app). Restart Desktop after installing and the service starts on its own; configure model providers and storage in the studio settings.
 
 ### Service setup
 
-The plugin does not ship the Toonflow service. Prepare the pinned upstream source in a new absolute directory, then follow its own documentation to install dependencies and start the service:
+The Toonflow service is installed with this studio. No separate source checkout and no start script are needed:
+
+- **Automatic start**: once the studio is installed or enabled, the studio library runtime (`dsh-studio-library` 0.1.20 or later) copies `app` to an isolated runtime copy and starts the service with Bun; after a studio update it switches to the new version. The console studio list shows the connection state, offers a Start button when offline and shows the failure reason on that row.
+- **Bun**: Bun 1.4.3 for each platform is declared as an optional dependency of this package, so the package manager installs only the one for the current platform. If that install was skipped, set `DSH_STUDIO_BUN`, or set `bunPath` (absolute path of the Bun executable) in the `dsh-studio-projects` plugin config.
+- **Data directory**: the database, assets and workspaces default to `<DSH_HOME>/studio/toonflow` (`DSH_HOME` defaults to `~/.dsh`). If your data lives elsewhere, set `toonflowDataDirectory` in the `dsh-studio-projects` plugin config or the `DSH_STUDIO_TOONFLOW_DATA` environment variable. Runtime copies and logs are kept in `<DSH_HOME>/studio/media`, apart from the data.
+- **Port**: `http://127.0.0.1:33101` by default; change it with `toonflowUrl` or `DSH_STUDIO_TOONFLOW_URL`. When the origin is not a loopback address (the service runs on another machine) the runtime does not start anything and only connects to it.
+- **Existing service**: a Toonflow already listening on the port (for example one you started from source) is reused and never stopped. Set `DSH_STUDIO_SKIP_APPS=1` to turn automatic start off.
+
+The bundled build corresponds to the upstream commit recorded in `UPSTREAM.json` plus `patches/`. To build it yourself:
 
 ```powershell
 node scripts/prepare-upstream.mjs media "C:\work\toonflow"
+cd C:\work\toonflow
+bun install
+bun run build
 ```
 
-Configure the DSH host with `toonflowUrl`, or set `DSH_STUDIO_TOONFLOW_URL` to the service origin. The default origin is `http://127.0.0.1:33101`; the upstream service, database, model provider and storage must be running before opening the studio.
+Older studio library versions (0.1.19 and below) do not start the service; start Toonflow yourself as before.
 
 ## Requirements and limits
 

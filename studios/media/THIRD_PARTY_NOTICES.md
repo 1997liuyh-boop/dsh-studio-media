@@ -4,10 +4,12 @@
 
 **独立服务与补丁适配**：本工作室基于 [HBAI-Ltd/Toonflow-app](https://github.com/HBAI-Ltd/Toonflow-app)。
 
-上游锁定提交：30139c931e80476caa718b31684b86383c6e83ce。
+上游锁定提交：6086cdffceb704a632eca143dd16cd461a78cdac。
 
 本项目改动采用 MIT；内置或补丁涉及的上游许可与版权保持原文。
 
 Toonflow 原 MIT 许可及 Copyright (c) 2026 HBAI-Ltd 保留于 UPSTREAM-LICENSE。
+
+`app/build` 是上述提交应用 `patches/` 后的构建产物，其中打包进来的第三方依赖（含 `app/build/server/node_modules` 下的运行时依赖）各自保持原许可，许可文件随对应目录保留。运行服务所用的 [Bun](https://bun.sh)（MIT）不在本包内，由包管理器作为可选依赖从 npm 安装。
 
 共享容器与 SDK 来源于 https://github.com/1997liuyh-boop/dsh-studio-library，其中容器改编自 https://github.com/Aisland-SJL/dsh-worktable 。感谢以上作者和所有开源依赖贡献者。

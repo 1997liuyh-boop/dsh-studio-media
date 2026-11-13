@@ -1,12 +1,17 @@
 {
   "repository": "https://github.com/HBAI-Ltd/Toonflow-app",
-  "commit": "30139c931e80476caa718b31684b86383c6e83ce",
+  "commit": "6086cdffceb704a632eca143dd16cd461a78cdac",
   "license": "MIT",
-  "source": "通过 scripts/prepare-upstream.mjs 检出独立服务源码并应用 patches",
+  "source": "应用构建产物随工作室包分发（app/build），由工作室库运行时用 Bun 直接拉起；需要自行构建时用 scripts/prepare-upstream.mjs 检出源码并应用 patches",
   "adaptation": [
     "patches/toonflow-studio.patch",
     "patches/toonflowStudio.css",
     "patches/studioControl.js"
   ],
-  "note": "后端源码、数据库和模型媒体供应商独立部署；本仓库包含工作室入口、会话适配和完整补丁，不包含运行数据。"
+  "note": "随包的是服务与页面的构建产物；数据库、素材、工作区等运行数据在用户本机的数据目录，模型与媒体供应商由用户自行配置，本仓库不包含运行数据。",
+  "build": {
+    "bun": "1.4.3",
+    "command": "bun install && bun run build",
+    "output": "build"
+  }
 }

@@ -1,0 +1,18 @@
+{
+  "name": "@toonflow/mcp",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./skill": {
+      "types": "./skill.d.ts",
+      "default": "./skills/toonflow/SKILL.md"
+    }
+  },
+  "bin": {
+    "toonflow-mcp": "./stdio.js"
+  },
+  "peerDependencies": {
+    "express": "^5.2.1"
+  }
+}

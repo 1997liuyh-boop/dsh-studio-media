@@ -6,3 +6,6 @@ node_modules/
 artifacts/
 # lib/static 是 Git 安装所需的已构建文件，需要提交。
 release/
+# 短剧应用的构建产物自带运行时依赖（app/build/server/node_modules），需要随包提交。
+!/app/build/server/node_modules/
+!/studios/media/app/build/server/node_modules/

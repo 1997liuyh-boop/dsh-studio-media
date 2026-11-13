@@ -1,0 +1,1 @@
+import{C as e,S as t,y as n}from"./get-D6wVuoKL.js";var r=RegExp(`[\\u200d\\ud800-\\udfff\\u0300-\\u036f\\ufe20-\\ufe2f\\u20d0-\\u20ff\\ufe0e\\ufe0f]`);function i(e){return r.test(e)}var a=`[object String]`;function o(r){return typeof r==`string`||!n(r)&&t(r)&&e(r)==a}export{i as n,o as t};

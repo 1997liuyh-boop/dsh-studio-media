@@ -1,0 +1,1 @@
+import{o as e}from"./dist-BG4cz7PY.js";var t=t=>e?window.requestAnimationFrame(t):setTimeout(t,16),n=t=>e?window.cancelAnimationFrame(t):clearTimeout(t);export{t as n,n as t};
